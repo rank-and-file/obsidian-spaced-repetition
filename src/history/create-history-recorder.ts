@@ -1,4 +1,5 @@
 import { SettingsManager } from "src/data/settings-manager";
+import { resolveHistoryFolder } from "src/history/history-folder";
 import { generateDeviceId, HistoryRecorder } from "src/history/history-recorder";
 import { AdapterHistoryStore } from "src/history/history-store";
 import type SRPlugin from "src/main";
@@ -20,20 +21,24 @@ function getOrCreateDeviceId(plugin: SRPlugin): string {
     return deviceId;
 }
 
+export function getPluginDir(plugin: SRPlugin): string {
+    const pluginDir: string | undefined = plugin.manifest.dir;
+    if (pluginDir === undefined) throw new Error("The plugin's folder is unknown");
+    return pluginDir;
+}
+
 /**
- * Creates the recorder for the usage history, stored in the "history" folder within the plugin's folder.
+ * Creates the recorder for the usage history, stored in the folder set in the settings (by default the "history"
+ * folder within the plugin's folder).
  */
 export function createHistoryRecorder(
     plugin: SRPlugin,
     settingsManager: SettingsManager,
 ): HistoryRecorder {
-    const pluginDir: string | undefined = plugin.manifest.dir;
-    if (pluginDir === undefined) throw new Error("The plugin's folder is unknown");
-
     const deviceId: string = getOrCreateDeviceId(plugin);
     const store = new AdapterHistoryStore(
         plugin.app.vault.adapter,
-        `${pluginDir}/history`,
+        resolveHistoryFolder(settingsManager.settings.usageHistoryFolder, getPluginDir(plugin)),
         deviceId,
     );
     return new HistoryRecorder(store, deviceId, () => settingsManager.settings.recordUsageHistory);

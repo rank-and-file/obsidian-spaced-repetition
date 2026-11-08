@@ -10,11 +10,13 @@ import {
     Tooltip,
 } from "chart.js";
 import moment from "moment";
-import { Setting, SettingGroup } from "obsidian";
+import { Notice, Setting, SettingGroup, TextComponent } from "obsidian";
 
 import { DataManager } from "src/data/data-manager";
 import { SettingsManager } from "src/data/settings-manager";
+import { getPluginDir } from "src/history/create-history-recorder";
 import { ReviewResponseName } from "src/history/history-events";
+import { resolveHistoryFolder } from "src/history/history-folder";
 import { HistoryReadResult } from "src/history/history-store";
 import {
     addDaysToDayKey,
@@ -35,6 +37,10 @@ import { SettingsPageType } from "src/ui/obsidian-ui-components/content-containe
 Chart.register(BarController, BarElement, CategoryScale, LinearScale, Legend, Tooltip);
 
 type UsagePeriod = "30" | "90" | "365" | "all";
+
+function errorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : JSON.stringify(error);
+}
 
 // Categorical slots 1 & 2 of the validated chart palette (blue, orange), stepped per theme
 const SERIES_COLORS = {
@@ -119,6 +125,21 @@ export class UsageHistoryPage extends SettingsPage {
                                 await this.plugin.dataManager.savePluginData();
                             }),
                     );
+            })
+            .addSetting((setting: Setting) => {
+                const defaultFolder: string = resolveHistoryFolder("", getPluginDir(this.plugin));
+                setting
+                    .setName(t("USAGE_HISTORY_FOLDER"))
+                    .setDesc(t("USAGE_HISTORY_FOLDER_DESC", { defaultFolder }))
+                    .addText((text: TextComponent) => {
+                        text.setPlaceholder(defaultFolder).setValue(
+                            this.settingsManager.settings.usageHistoryFolder,
+                        );
+                        // Applied when leaving the field or pressing enter, not on every key press, as it moves files
+                        text.inputEl.addEventListener("change", () => {
+                            void this.applyHistoryFolder(text);
+                        });
+                    });
             });
 
         const loadingEl = this.containerEl.createDiv({
@@ -171,6 +192,39 @@ export class UsageHistoryPage extends SettingsPage {
 
         this.chartsContainerEl = this.containerEl.createDiv("sr-usage-charts");
         this.renderCharts();
+    }
+
+    /**
+     * Stores the usage history in the folder entered in the text field from now on, and moves the existing history
+     * files there.
+     */
+    private async applyHistoryFolder(text: TextComponent): Promise<void> {
+        const value: string = text.getValue();
+        let folder: string;
+        try {
+            folder = resolveHistoryFolder(value, getPluginDir(this.plugin));
+        } catch (error) {
+            // Invalid input: tell the user, and show the folder that is still used
+            new Notice(t("USAGE_HISTORY_FOLDER_INVALID", { error: errorMessage(error) }));
+            text.setValue(this.settingsManager.settings.usageHistoryFolder);
+            return;
+        }
+
+        const store = this.plugin.historyRecorder.store;
+        if (folder === store.location) return;
+
+        let movedCount: number;
+        try {
+            movedCount = await store.moveTo(folder);
+        } catch (error) {
+            new Notice(t("USAGE_HISTORY_FOLDER_MOVE_FAILED", { error: errorMessage(error) }));
+            throw error;
+        }
+        this.settingsManager.settings.usageHistoryFolder = value.trim().length === 0 ? "" : folder;
+        await this.plugin.dataManager.pluginDataManager.savePluginData();
+
+        new Notice(t("USAGE_HISTORY_FOLDER_CHANGED", { folder, count: movedCount }));
+        this.render();
     }
 
     private renderOverview(stats: UsageStats): void {

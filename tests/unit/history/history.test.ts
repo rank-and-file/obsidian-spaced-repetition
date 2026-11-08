@@ -2,6 +2,7 @@ import { Card } from "src/data/data-structures/card/card";
 import { TopicPath } from "src/data/data-structures/deck/topic-path";
 import { DEFAULT_SETTINGS } from "src/data/settings";
 import { CardReviewedPayload, HistoryEvent, HistoryEventPayload } from "src/history/history-events";
+import { normalizeVaultFolderPath, resolveHistoryFolder } from "src/history/history-folder";
 import { HistoryRecorder } from "src/history/history-recorder";
 import {
     AdapterHistoryStore,
@@ -54,10 +55,31 @@ class FakeAdapter implements HistoryFileAdapter {
         return Promise.resolve(this.files.get(path));
     }
     list(path: string): Promise<{ files: string[]; folders: string[] }> {
+        const isDirectChild = (child: string) =>
+            child.startsWith(path + "/") && !child.slice(path.length + 1).includes("/");
         return Promise.resolve({
-            files: [...this.files.keys()].filter((file) => file.startsWith(path + "/")),
-            folders: [],
+            files: [...this.files.keys()].filter(isDirectChild),
+            folders: [...this.folders].filter(isDirectChild),
         });
+    }
+    rename(path: string, newPath: string): Promise<void> {
+        if (!this.files.has(path)) throw new Error(`rename of missing file ${path}`);
+        if (this.files.has(newPath)) throw new Error(`rename onto existing file ${newPath}`);
+        this.files.set(newPath, this.files.get(path));
+        this.files.delete(path);
+        return Promise.resolve();
+    }
+    remove(path: string): Promise<void> {
+        if (!this.files.delete(path)) throw new Error(`remove of missing file ${path}`);
+        return Promise.resolve();
+    }
+    rmdir(path: string, recursive: boolean): Promise<void> {
+        if (recursive) throw new Error("recursive rmdir not expected");
+        if ([...this.files.keys(), ...this.folders].some((p) => p.startsWith(path + "/"))) {
+            throw new Error(`rmdir of non-empty folder ${path}`);
+        }
+        this.folders.delete(path);
+        return Promise.resolve();
     }
 }
 
@@ -170,10 +192,116 @@ describe("AdapterHistoryStore", () => {
         expect((await store.readAll()).events).toEqual([e1, e3]);
     });
 
+    test("Appending to a file that was cut off doesn't damage the new line", async () => {
+        const adapter = new FakeAdapter();
+        adapter.folders.add("h");
+        const e1 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 1, 12));
+        adapter.files.set("h/events-2026-11-dev1.jsonl", `${JSON.stringify(e1)}\n{"v":1,"id`);
+
+        const store = new AdapterHistoryStore(adapter, "h", "dev1");
+        const e2 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 2, 12));
+        const e3 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 3, 12));
+        await store.append(e2);
+        await store.append(e3);
+
+        const result = await store.readAll();
+        expect(result.events).toEqual([e1, e2, e3]);
+        expect(result.corruptLines).toEqual([{ file: "h/events-2026-11-dev1.jsonl", lineNo: 2 }]);
+    });
+
     test("Invalid device ids are rejected", () => {
         expect(() => new AdapterHistoryStore(new FakeAdapter(), "h", "../x")).toThrow(
             /invalid device id/,
         );
+    });
+});
+
+describe("AdapterHistoryStore.moveTo", () => {
+    test("Moves the history files and stores new events in the new folder", async () => {
+        const adapter = new FakeAdapter();
+        const store = new AdapterHistoryStore(adapter, ".obsidian/plugins/sr/history", "dev1");
+        const e1 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 10, 15, 12));
+        const e2 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 1, 12));
+        await store.append(e1);
+        await store.append(e2);
+        adapter.files.set(".obsidian/plugins/sr/history/unrelated.txt", "keep me");
+
+        // An append requested right before the move goes to the old folder, one right after to the new folder
+        const e3 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 2, 12));
+        const e4 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 3, 12));
+        const appendBefore = store.append(e3);
+        const move = store.moveTo("SR/history");
+        const appendAfter = store.append(e4);
+        expect(store.location).toEqual(".obsidian/plugins/sr/history");
+        expect(await move).toEqual(2);
+        await Promise.all([appendBefore, appendAfter]);
+
+        expect(store.location).toEqual("SR/history");
+        expect([...adapter.files.keys()].sort()).toEqual([
+            ".obsidian/plugins/sr/history/unrelated.txt",
+            "SR/history/events-2026-10-dev1.jsonl",
+            "SR/history/events-2026-11-dev1.jsonl",
+        ]);
+        expect((await store.readAll()).events).toEqual([e1, e2, e3, e4]);
+        // The old folder isn't empty, so it's kept
+        expect(adapter.folders.has(".obsidian/plugins/sr/history")).toEqual(true);
+        expect(adapter.folders.has("SR")).toEqual(true);
+    });
+
+    test("Merges with files of the same month in the new folder and removes the empty old folder", async () => {
+        const adapter = new FakeAdapter();
+        const store = new AdapterHistoryStore(adapter, "a", "dev1");
+        const e1 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 1, 12));
+        const e2 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 2, 12));
+        await store.append(e2);
+        adapter.folders.add("b");
+        adapter.files.set("b/events-2026-11-dev1.jsonl", JSON.stringify(e1)); // no trailing newline
+
+        expect(await store.moveTo("b")).toEqual(1);
+        expect(adapter.folders.has("a")).toEqual(false);
+        expect(adapter.files.get("b/events-2026-11-dev1.jsonl")).toEqual(
+            JSON.stringify(e1) + "\n" + JSON.stringify(e2) + "\n",
+        );
+        expect((await store.readAll()).events).toEqual([e1, e2]);
+    });
+
+    test("Moving without any history, and moving to the same folder", async () => {
+        const adapter = new FakeAdapter();
+        const store = new AdapterHistoryStore(adapter, "a", "dev1");
+        expect(await store.moveTo("a")).toEqual(0);
+        expect(await store.moveTo("b/c")).toEqual(0);
+        expect(store.location).toEqual("b/c");
+        expect(adapter.folders.size).toEqual(0);
+    });
+
+    test("Invalid folders are rejected", () => {
+        const store = new AdapterHistoryStore(new FakeAdapter(), "a", "dev1");
+        expect(() => store.moveTo("")).toThrow(/invalid folder/);
+        expect(() => store.moveTo("/abs")).toThrow(/invalid folder/);
+    });
+});
+
+describe("resolveHistoryFolder", () => {
+    test("Empty means the history folder within the plugin's folder", () => {
+        expect(resolveHistoryFolder("", ".obsidian/plugins/sr")).toEqual(
+            ".obsidian/plugins/sr/history",
+        );
+        expect(resolveHistoryFolder("  ", ".obsidian/plugins/sr")).toEqual(
+            ".obsidian/plugins/sr/history",
+        );
+    });
+
+    test("Custom folders are normalized", () => {
+        expect(resolveHistoryFolder("/Spaced Repetition\\history/", "p")).toEqual(
+            "Spaced Repetition/history",
+        );
+        expect(resolveHistoryFolder("a//b", "p")).toEqual("a/b");
+    });
+
+    test("Relative path segments are rejected", () => {
+        expect(() => resolveHistoryFolder("../outside", "p")).toThrow(/must not contain/);
+        expect(() => resolveHistoryFolder("a/./b", "p")).toThrow(/must not contain/);
+        expect(() => normalizeVaultFolderPath("/")).toThrow(/not a folder path/);
     });
 });
 

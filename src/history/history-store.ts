@@ -15,11 +15,17 @@ export interface HistoryReadResult {
 }
 
 export interface IHistoryStore {
-    // Human readable description of where the history is stored
+    // Where the history is stored (for the default store: the folder path relative to the vault root)
     readonly location: string;
 
     append(event: HistoryEvent): Promise<void>;
     readAll(): Promise<HistoryReadResult>;
+    /**
+     * Stores the history in a different folder from now on, and moves the existing history files there.
+     *
+     * @returns The number of moved files.
+     */
+    moveTo(folder: string): Promise<number>;
 }
 
 /**
@@ -32,6 +38,9 @@ export interface HistoryFileAdapter {
     append(normalizedPath: string, data: string): Promise<void>;
     read(normalizedPath: string): Promise<string>;
     list(normalizedPath: string): Promise<{ files: string[]; folders: string[] }>;
+    rename(normalizedPath: string, normalizedNewPath: string): Promise<void>;
+    remove(normalizedPath: string): Promise<void>;
+    rmdir(normalizedPath: string, recursive: boolean): Promise<void>;
 }
 
 const HISTORY_FILE_REGEX = /(^|\/)events-\d{4}-\d{2}-[0-9a-z]+\.jsonl$/;
@@ -96,51 +105,134 @@ function sortEventsByTime(events: HistoryEvent[]): HistoryEvent[] {
  * to, and never written by two devices, so syncing the vault (Obsidian Sync, iCloud, git, ...) can't cause conflicts.
  */
 export class AdapterHistoryStore implements IHistoryStore {
-    public readonly location: string;
+    private folder: string;
     private adapter: HistoryFileAdapter;
     private deviceId: string;
     private writeQueue: Promise<void> = Promise.resolve();
     private knownFiles: Set<string> = new Set();
 
+    /**
+     * @param {HistoryFileAdapter} adapter - Usually the vault's DataAdapter.
+     * @param {string} folder - Normalized folder path relative to the vault root (see resolveHistoryFolder()).
+     * @param {string} deviceId - This device's id, part of the file names.
+     */
     constructor(adapter: HistoryFileAdapter, folder: string, deviceId: string) {
-        if (folder.length === 0) throw new Error("AdapterHistoryStore: empty folder path");
         if (!/^[0-9a-z]+$/.test(deviceId)) {
             throw new Error(`AdapterHistoryStore: invalid device id "${deviceId}"`);
         }
         this.adapter = adapter;
-        this.location = folder;
+        this.folder = AdapterHistoryStore.checkFolder(folder);
         this.deviceId = deviceId;
+    }
+
+    get location(): string {
+        return this.folder;
+    }
+
+    private static checkFolder(folder: string): string {
+        if (folder.length === 0 || folder.startsWith("/") || folder.endsWith("/")) {
+            throw new Error(`AdapterHistoryStore: invalid folder path "${folder}"`);
+        }
+        return folder;
     }
 
     filePathFor(event: HistoryEvent): string {
         const date: Date = new Date(event.ts);
         const month: string = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
-        return `${this.location}/events-${month}-${this.deviceId}.jsonl`;
+        return `${this.folder}/events-${month}-${this.deviceId}.jsonl`;
     }
 
     append(event: HistoryEvent): Promise<void> {
         const line: string = JSON.stringify(event) + "\n";
-        const path: string = this.filePathFor(event);
 
         // Appends are serialized, so that lines can never interleave and the file order matches the event order
-        const operation: Promise<void> = this.writeQueue.then(async () => {
-            if (this.knownFiles.has(path) || (await this.adapter.exists(path))) {
+        return this.enqueue(async () => {
+            // Determined when it's this append's turn, so that it goes to the new folder after a moveTo()
+            const path: string = this.filePathFor(event);
+            if (this.knownFiles.has(path)) {
                 await this.adapter.append(path, line);
+            } else if (await this.adapter.exists(path)) {
+                await this.adapter.append(path, (await this.newlineNeeded(path)) + line);
             } else {
-                if (!(await this.adapter.exists(this.location))) {
-                    await this.adapter.mkdir(this.location);
-                }
+                await this.ensureFolder(this.folder);
                 await this.adapter.write(path, line);
             }
             this.knownFiles.add(path);
         });
+    }
 
-        // The caller gets the error of a failed append. The queue itself continues with the next append.
-        this.writeQueue = operation.then(
+    moveTo(folder: string): Promise<number> {
+        const newFolder: string = AdapterHistoryStore.checkFolder(folder);
+        return this.enqueue(async () => {
+            const oldFolder: string = this.folder;
+            if (newFolder === oldFolder) return 0;
+
+            let movedCount: number = 0;
+            if (await this.adapter.exists(oldFolder)) {
+                const files: string[] = (await this.adapter.list(oldFolder)).files.filter((file) =>
+                    HISTORY_FILE_REGEX.test(file),
+                );
+                if (files.length > 0) await this.ensureFolder(newFolder);
+
+                for (const file of files) {
+                    const target: string = `${newFolder}/${file.split("/").pop()}`;
+                    if (await this.adapter.exists(target)) {
+                        // This device's file of the same month is in both folders (e.g. after moving back and forth).
+                        // Both hold different events, so keep all of them.
+                        const text: string = await this.adapter.read(file);
+                        const lines: string = text.endsWith("\n") ? text : text + "\n";
+                        await this.adapter.append(
+                            target,
+                            (await this.newlineNeeded(target)) + lines,
+                        );
+                        await this.adapter.remove(file);
+                    } else {
+                        await this.adapter.rename(file, target);
+                    }
+                    movedCount++;
+                }
+
+                const remaining = await this.adapter.list(oldFolder);
+                if (remaining.files.length === 0 && remaining.folders.length === 0) {
+                    await this.adapter.rmdir(oldFolder, false);
+                }
+            }
+
+            this.folder = newFolder;
+            this.knownFiles.clear();
+            return movedCount;
+        });
+    }
+
+    /**
+     * Runs file operations one after another. The caller gets the error of a failed operation, the queue itself
+     * continues with the next operation.
+     */
+    private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+        const result: Promise<T> = this.writeQueue.then(operation);
+        this.writeQueue = result.then(
             (): void => undefined,
             (): void => undefined,
         );
-        return operation;
+        return result;
+    }
+
+    /**
+     * Returns "\n" if the file doesn't end with a line break, e.g. because a write was cut off. Appending to it
+     * directly would also damage the appended line.
+     */
+    private async newlineNeeded(path: string): Promise<string> {
+        const text: string = await this.adapter.read(path);
+        return text.length === 0 || text.endsWith("\n") ? "" : "\n";
+    }
+
+    private async ensureFolder(folder: string): Promise<void> {
+        // Created one level at a time, as not every adapter creates missing parent folders
+        const segments: string[] = folder.split("/");
+        for (let i = 1; i <= segments.length; i++) {
+            const path: string = segments.slice(0, i).join("/");
+            if (!(await this.adapter.exists(path))) await this.adapter.mkdir(path);
+        }
     }
 
     async readAll(): Promise<HistoryReadResult> {
@@ -148,11 +240,11 @@ export class AdapterHistoryStore implements IHistoryStore {
 
         const events: HistoryEvent[] = [];
         const corruptLines: CorruptHistoryLine[] = [];
-        if (!(await this.adapter.exists(this.location))) {
+        if (!(await this.adapter.exists(this.folder))) {
             return { events, corruptLines };
         }
 
-        const listed = await this.adapter.list(this.location);
+        const listed = await this.adapter.list(this.folder);
         for (const file of listed.files) {
             if (!HISTORY_FILE_REGEX.test(file)) continue;
             const parsed = parseHistoryFile(await this.adapter.read(file), file);
@@ -168,6 +260,7 @@ export class AdapterHistoryStore implements IHistoryStore {
  */
 export class InMemoryHistoryStore implements IHistoryStore {
     public readonly location: string = "memory";
+
     public events: HistoryEvent[] = [];
 
     append(event: HistoryEvent): Promise<void> {
@@ -177,5 +270,9 @@ export class InMemoryHistoryStore implements IHistoryStore {
 
     readAll(): Promise<HistoryReadResult> {
         return Promise.resolve({ events: sortEventsByTime([...this.events]), corruptLines: [] });
+    }
+
+    moveTo(_folder: string): Promise<number> {
+        return Promise.resolve(0);
     }
 }

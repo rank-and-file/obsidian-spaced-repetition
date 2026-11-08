@@ -64,6 +64,13 @@ const en: IBaseLocale = {
     RECORD_USAGE_HISTORY: "Record usage history",
     RECORD_USAGE_HISTORY_DESC:
         "Log everything you do in review sessions (cards shown, answers, skips, suspensions, undos, ...) with timestamps, as the basis for these statistics. Cards get a permanent id in their scheduling comment the first time they are shown. Stored as JSON lines in ${location}.",
+    USAGE_HISTORY_FOLDER: "History folder",
+    USAGE_HISTORY_FOLDER_DESC:
+        'Where the history files are stored, as a folder path relative to the vault root, e.g. "Spaced Repetition/history". Leave it empty for the default: ${defaultFolder}. When you change it, the existing history files are moved to the new folder.',
+    USAGE_HISTORY_FOLDER_INVALID: "Invalid history folder: ${error}",
+    USAGE_HISTORY_FOLDER_MOVE_FAILED: "Could not move the usage history: ${error}",
+    USAGE_HISTORY_FOLDER_CHANGED:
+        "The usage history is now stored in ${folder} (${count} file(s) moved).",
     USAGE_HISTORY_LOADING: "Loading usage history...",
     USAGE_HISTORY_EMPTY:
         "No usage history yet. It's recorded from now on, whenever you review flashcards or notes.",

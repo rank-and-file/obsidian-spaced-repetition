@@ -89,6 +89,8 @@ export interface SRSettings {
 
     // usage history
     recordUsageHistory: boolean;
+    // Empty: the "history" folder within the plugin's folder. Otherwise a folder path relative to the vault root.
+    usageHistoryFolder: string;
 
     // logging
     showSchedulingDebugMessages: boolean;
@@ -182,6 +184,7 @@ export const DEFAULT_SETTINGS: SRSettings = {
 
     // usage history
     recordUsageHistory: true,
+    usageHistoryFolder: "",
 
     // logging
     showSchedulingDebugMessages: false,
