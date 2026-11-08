@@ -21,7 +21,9 @@ export interface IHistoryStore {
     append(event: HistoryEvent): Promise<void>;
     readAll(): Promise<HistoryReadResult>;
     /**
-     * Stores the history in a different folder from now on, and moves the existing history files there.
+     * Stores the history in a different folder from now on, and moves the existing history files there. If moving
+     * fails, the history stays in the old folder (some files may have been moved already, calling it again moves the
+     * rest).
      *
      * @returns The number of moved files.
      */
@@ -40,7 +42,6 @@ export interface HistoryFileAdapter {
     list(normalizedPath: string): Promise<{ files: string[]; folders: string[] }>;
     rename(normalizedPath: string, normalizedNewPath: string): Promise<void>;
     remove(normalizedPath: string): Promise<void>;
-    rmdir(normalizedPath: string, recursive: boolean): Promise<void>;
 }
 
 const HISTORY_FILE_REGEX = /(^|\/)events-\d{4}-\d{2}-[0-9a-z]+\.jsonl$/;
@@ -166,6 +167,8 @@ export class AdapterHistoryStore implements IHistoryStore {
         return this.enqueue(async () => {
             const oldFolder: string = this.folder;
             if (newFolder === oldFolder) return 0;
+            // Files are about to move away, even if the move fails halfway
+            this.knownFiles.clear();
 
             let movedCount: number = 0;
             if (await this.adapter.exists(oldFolder)) {
@@ -191,15 +194,12 @@ export class AdapterHistoryStore implements IHistoryStore {
                     }
                     movedCount++;
                 }
-
-                const remaining = await this.adapter.list(oldFolder);
-                if (remaining.files.length === 0 && remaining.folders.length === 0) {
-                    await this.adapter.rmdir(oldFolder, false);
-                }
+                // The old folder is kept, even if it's empty now. Removing it isn't worth the risk: Obsidian's
+                // desktop adapter can only remove folders recursively, which would also delete files that another
+                // device synced into it in the meantime.
             }
 
             this.folder = newFolder;
-            this.knownFiles.clear();
             return movedCount;
         });
     }

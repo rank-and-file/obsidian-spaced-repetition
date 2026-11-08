@@ -216,12 +216,14 @@ export class UsageHistoryPage extends SettingsPage {
         let movedCount: number;
         try {
             movedCount = await store.moveTo(folder);
+            this.settingsManager.settings.usageHistoryFolder =
+                value.trim().length === 0 ? "" : folder;
+            await this.plugin.dataManager.pluginDataManager.savePluginData();
         } catch (error) {
+            // Triggered by a text field, so without this the error would only show up in the developer console
             new Notice(t("USAGE_HISTORY_FOLDER_MOVE_FAILED", { error: errorMessage(error) }));
             throw error;
         }
-        this.settingsManager.settings.usageHistoryFolder = value.trim().length === 0 ? "" : folder;
-        await this.plugin.dataManager.pluginDataManager.savePluginData();
 
         new Notice(t("USAGE_HISTORY_FOLDER_CHANGED", { folder, count: movedCount }));
         this.render();

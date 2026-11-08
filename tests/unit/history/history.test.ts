@@ -29,6 +29,7 @@ class FakeAdapter implements HistoryFileAdapter {
     files: Map<string, string> = new Map();
     folders: Set<string> = new Set();
     failNextAppend: boolean = false;
+    failRenameOf: string | null = null;
 
     exists(path: string): Promise<boolean> {
         return Promise.resolve(this.files.has(path) || this.folders.has(path));
@@ -63,6 +64,7 @@ class FakeAdapter implements HistoryFileAdapter {
         });
     }
     rename(path: string, newPath: string): Promise<void> {
+        if (path === this.failRenameOf) return Promise.reject(new Error("permission denied"));
         if (!this.files.has(path)) throw new Error(`rename of missing file ${path}`);
         if (this.files.has(newPath)) throw new Error(`rename onto existing file ${newPath}`);
         this.files.set(newPath, this.files.get(path));
@@ -71,14 +73,6 @@ class FakeAdapter implements HistoryFileAdapter {
     }
     remove(path: string): Promise<void> {
         if (!this.files.delete(path)) throw new Error(`remove of missing file ${path}`);
-        return Promise.resolve();
-    }
-    rmdir(path: string, recursive: boolean): Promise<void> {
-        if (recursive) throw new Error("recursive rmdir not expected");
-        if ([...this.files.keys(), ...this.folders].some((p) => p.startsWith(path + "/"))) {
-            throw new Error(`rmdir of non-empty folder ${path}`);
-        }
-        this.folders.delete(path);
         return Promise.resolve();
     }
 }
@@ -243,12 +237,12 @@ describe("AdapterHistoryStore.moveTo", () => {
             "SR/history/events-2026-11-dev1.jsonl",
         ]);
         expect((await store.readAll()).events).toEqual([e1, e2, e3, e4]);
-        // The old folder isn't empty, so it's kept
+        // Folders are never removed
         expect(adapter.folders.has(".obsidian/plugins/sr/history")).toEqual(true);
         expect(adapter.folders.has("SR")).toEqual(true);
     });
 
-    test("Merges with files of the same month in the new folder and removes the empty old folder", async () => {
+    test("Merges with files of the same month in the new folder, and keeps the empty old folder", async () => {
         const adapter = new FakeAdapter();
         const store = new AdapterHistoryStore(adapter, "a", "dev1");
         const e1 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 1, 12));
@@ -258,11 +252,41 @@ describe("AdapterHistoryStore.moveTo", () => {
         adapter.files.set("b/events-2026-11-dev1.jsonl", JSON.stringify(e1)); // no trailing newline
 
         expect(await store.moveTo("b")).toEqual(1);
-        expect(adapter.folders.has("a")).toEqual(false);
+        // Obsidian's desktop adapter can't remove a folder without removing its content (fs.rm without recursive
+        // fails with "Path is a directory"), so the old folder stays
+        expect(adapter.folders.has("a")).toEqual(true);
+        expect(adapter.files.has("a/events-2026-11-dev1.jsonl")).toEqual(false);
         expect(adapter.files.get("b/events-2026-11-dev1.jsonl")).toEqual(
             JSON.stringify(e1) + "\n" + JSON.stringify(e2) + "\n",
         );
         expect((await store.readAll()).events).toEqual([e1, e2]);
+    });
+
+    test("A failed move keeps the old folder, and moving again moves the rest", async () => {
+        const adapter = new FakeAdapter();
+        const store = new AdapterHistoryStore(adapter, "a", "dev1");
+        const e1 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 10, 1, 12));
+        const e2 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 11, 1, 12));
+        await store.append(e1);
+        await store.append(e2);
+
+        adapter.failRenameOf = "a/events-2026-11-dev1.jsonl";
+        await expect(store.moveTo("b")).rejects.toThrow("permission denied");
+        expect(store.location).toEqual("a");
+        expect(adapter.files.has("b/events-2026-10-dev1.jsonl")).toEqual(true);
+
+        // New events still go to the old folder
+        const e3 = makeEvent({ type: "deck_list_shown" }, localTs(2026, 10, 2, 12));
+        await store.append(e3);
+
+        adapter.failRenameOf = null;
+        expect(await store.moveTo("b")).toEqual(2);
+        expect(store.location).toEqual("b");
+        expect([...adapter.files.keys()].sort()).toEqual([
+            "b/events-2026-10-dev1.jsonl",
+            "b/events-2026-11-dev1.jsonl",
+        ]);
+        expect((await store.readAll()).events).toEqual([e1, e3, e2]);
     });
 
     test("Moving without any history, and moving to the same folder", async () => {
