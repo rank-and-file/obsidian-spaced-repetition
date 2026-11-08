@@ -34,6 +34,7 @@ export default class CardToolbarComponent {
         suspendCurrentCard: () => Promise<void>,
         onOpenResetModalClick: () => void,
         undoLastAction: () => Promise<void>,
+        redoLastUndoneAction: () => Promise<void>,
         closeModal?: () => void,
     ) {
         // Build ui
@@ -103,6 +104,7 @@ export default class CardToolbarComponent {
             suspendCurrentCard,
             onOpenResetModalClick,
             undoLastAction,
+            redoLastUndoneAction,
             closeModal,
             EmulatedPlatform().isPhone || Platform.isPhone
                 ? ["mod-raised", "sr-short-menu-button"]
@@ -123,6 +125,7 @@ export default class CardToolbarComponent {
             suspendCurrentCard,
             onOpenResetModalClick,
             undoLastAction,
+            redoLastUndoneAction,
             closeModal,
             EmulatedPlatform().isPhone || Platform.isPhone
                 ? ["mod-raised", "sr-extended-menu-button"]
@@ -178,13 +181,14 @@ export default class CardToolbarComponent {
      * @param disabled - The disabled state
      */
     /**
-     * Sets whether there is an action to undo
-     * @param available - True if there is an action to undo
+     * Sets whether there is an action to undo / redo
+     * @param canUndo - True if there is an action to undo
+     * @param canRedo - True if there is an undone action to redo
      */
-    public setUndoAvailable(available: boolean) {
-        this.undoButton.setAvailable(available);
-        this.extendedMenuButton.setUndoAvailable(available);
-        this.shortMenuButton.setUndoAvailable(available);
+    public setUndoAvailable(canUndo: boolean, canRedo: boolean) {
+        this.undoButton.setAvailable(canUndo);
+        this.extendedMenuButton.setUndoAvailable(canUndo, canRedo);
+        this.shortMenuButton.setUndoAvailable(canUndo, canRedo);
     }
 
     public setResetButtonDisabled(disabled: boolean) {

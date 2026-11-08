@@ -47,6 +47,7 @@ export interface IFlashcardReviewSequencer {
     completeUndoSnapshot(snapshot: ReviewUndoSnapshot): void;
     undo(snapshot: ReviewUndoSnapshot): Promise<void>;
     focusCard(match: CardMatch, topicPath: TopicPath): boolean;
+    focusCardObject(card: Card, topicPath: TopicPath): boolean;
 }
 
 /**
@@ -668,12 +669,27 @@ export class FlashcardReviewSequencer implements IFlashcardReviewSequencer {
      * @returns {boolean} - False if the card isn't waiting for review in this review queue.
      */
     focusCard(match: CardMatch, topicPath: TopicPath): boolean {
+        return this.focusFirstCard((card: Card) => cardMatches(card, match), topicPath);
+    }
+
+    /**
+     * Makes the given card the current card, e.g. to redo an undone action on it.
+     *
+     * @param {Card} card - The card.
+     * @param {TopicPath} topicPath - The deck to review. If the card isn't within it, the whole deck tree is used.
+     * @returns {boolean} - False if the card isn't waiting for review in this review queue.
+     */
+    focusCardObject(card: Card, topicPath: TopicPath): boolean {
+        return this.focusFirstCard((candidate: Card) => candidate === card, topicPath);
+    }
+
+    private focusFirstCard(predicate: (card: Card) => boolean, topicPath: TopicPath): boolean {
         const findIn = (deck: Deck | null): Card | null =>
             deck === null
                 ? null
                 : (deck
                       .getFlattenedRepItemArray(RepItemState.AnyItem, true)
-                      .find((card: Card) => cardMatches(card, match)) ?? null);
+                      .find((card: Card) => predicate(card)) ?? null);
 
         let iteratorTopicPath: TopicPath = topicPath;
         let card: Card | null = findIn(this.remainingDeckTree.getDeck(topicPath));

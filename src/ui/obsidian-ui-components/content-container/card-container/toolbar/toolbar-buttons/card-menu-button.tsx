@@ -6,6 +6,7 @@ import MenuButtonComponent from "src/ui/obsidian-ui-components/content-container
 export default class CardMenuButtonComponent extends MenuButtonComponent {
     private isResetButtonDisabled: boolean;
     private isUndoAvailable: boolean = false;
+    private isRedoAvailable: boolean = false;
     public constructor(
         container: HTMLElement,
         isExtended: boolean,
@@ -20,6 +21,7 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
         suspendCurrentCard: () => Promise<void>,
         onOpenResetModalClick: () => void,
         undoLastAction: () => Promise<void>,
+        redoLastUndoneAction: () => Promise<void>,
         closeModal?: () => void,
         classNames?: string[],
     ) {
@@ -41,6 +43,7 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
                     displayCurrentCardInfoNotice,
                     deleteCurrentCard,
                     undoLastAction,
+                    redoLastUndoneAction,
                     closeModal,
                 );
 
@@ -55,8 +58,9 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
         this.isResetButtonDisabled = disabled;
     }
 
-    public setUndoAvailable(available: boolean) {
-        this.isUndoAvailable = available;
+    public setUndoAvailable(canUndo: boolean, canRedo: boolean) {
+        this.isUndoAvailable = canUndo;
+        this.isRedoAvailable = canRedo;
     }
 
     private buildMenu(
@@ -72,6 +76,7 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
         displayCurrentCardInfoNotice: () => void,
         deleteCurrentCard: () => void,
         undoLastAction: () => Promise<void>,
+        redoLastUndoneAction: () => Promise<void>,
         closeModal?: () => void,
     ) {
         if (isExtended) {
@@ -82,6 +87,14 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
                         await undoLastAction();
                     })
                     .setDisabled(!this.isUndoAvailable);
+            });
+            cardMenu.addItem((item) => {
+                item.setTitle(t("REDO_LAST_ACTION"))
+                    .setIcon("redo-2")
+                    .onClick(async () => {
+                        await redoLastUndoneAction();
+                    })
+                    .setDisabled(!this.isRedoAvailable);
             });
             cardMenu.addItem((item) => {
                 item.setTitle(t("EDIT_CARD"))

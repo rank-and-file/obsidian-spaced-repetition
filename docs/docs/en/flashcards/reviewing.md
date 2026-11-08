@@ -82,8 +82,9 @@ To review faster, use the following keyboard shortcuts:
 - `S` => Skip the card
 - `@` => [Suspend](#suspending-cards) the card
 - `Ctrl+Z` (`Cmd+Z` on macOS) => [Undo](#undo) the last action
+- `Ctrl+Shift+Z` or `Ctrl+Y` (`Cmd+Shift+Z` on macOS) => [Redo](#redo) the last undone action
 
-If you enabled custom hotkeys in the settings, assign them to the `Spaced Repetition: Suspend card` and `Spaced Repetition: Undo last action` commands (and the other review commands) instead.
+If you enabled custom hotkeys in the settings, assign them to the `Spaced Repetition: Suspend card`, `Spaced Repetition: Undo last action` and `Spaced Repetition: Redo last undone action` commands (and the other review commands) instead.
 
 ### Suspending cards
 
@@ -122,6 +123,14 @@ Undo is available until you close the review. Deleting and editing a card can't 
 !!! note
 
     Undo can't restore a card whose text you changed in the note (outside of the review) after the action. You then get an error, and nothing is changed.
+
+### Redo
+
+Press `Ctrl+Shift+Z` or `Ctrl+Y` (`Cmd+Shift+Z` on macOS), or use **Redo** in the `⋮` card menu, to redo the last action you undid. It applies the same action (the same answer, skip or suspension) to the same card again. After several undos, you can redo them one after another.
+
+A reviewed card gets its schedule calculated again when you redo the review, so the due date can differ slightly from the first time.
+
+You can only redo while you are looking at cards. As soon as you do something new (answer, skip or suspend a card) or go back to the deck list, the undone actions can't be redone anymore.
 
 ---
 

@@ -63,6 +63,7 @@ export class CardContainer {
         jumpToCurrentCardHandler: () => Promise<void>,
         displayCurrentCardInfoNoticeHandler: () => void,
         undoLastActionHandler: () => Promise<void>,
+        redoLastUndoneActionHandler: () => Promise<void>,
         closeModal?: () => void,
     ) {
         // Init properties
@@ -103,6 +104,7 @@ export class CardContainer {
                 ).open();
             },
             undoLastActionHandler,
+            redoLastUndoneActionHandler,
             closeModal,
         );
 
@@ -169,12 +171,13 @@ export class CardContainer {
     }
 
     /**
-     * Sets whether there is an action to undo (enables the undo button)
+     * Sets whether there is an action to undo / redo (enables the undo button and menu items)
      *
-     * @param available
+     * @param canUndo
+     * @param canRedo
      */
-    public setUndoAvailable(available: boolean) {
-        this.toolbar.setUndoAvailable(available);
+    public setUndoAvailable(canUndo: boolean, canRedo: boolean) {
+        this.toolbar.setUndoAvailable(canUndo, canRedo);
     }
 
     public async drawCardFront(sessionData: SessionData, settings: SRSettings) {

@@ -450,3 +450,36 @@ describe("Undo after the review queue was reloaded", () => {
         expect(c.remainingCount()).toEqual(3);
     });
 });
+
+describe("Redo", () => {
+    test("After two undos, both actions can be re-applied to their cards in order", async () => {
+        const c = await UndoTestContext.create(FlashcardReviewMode.Review, threeCardsText);
+        const q2 = c.sequencer.currentCard;
+        const review = await c.undoable(() => c.sequencer.processReview(ReviewResponse.Good));
+        const q1 = c.sequencer.currentCard;
+        const skip = await c.undoable(() => c.sequencer.skipCurrentCard());
+        expect(c.front).toEqual("Q3");
+        const textAfterReview: string = await c.file.read();
+
+        await c.sequencer.undo(skip);
+        await c.sequencer.undo(review);
+        expect(c.front).toEqual("Q2");
+        expect(await c.file.read()).toEqual(c.originalText);
+
+        // Redo the review
+        expect(c.sequencer.focusCardObject(q2, review.sessionTopicPath)).toEqual(true);
+        await c.sequencer.processReview(ReviewResponse.Good);
+        expect(await c.file.read()).toEqual(textAfterReview);
+
+        // Redo the skip, even if another card came up first
+        expect(c.sequencer.focusCardObject(q1, skip.sessionTopicPath)).toEqual(true);
+        expect(c.sequencer.currentCard).toBe(q1);
+        c.sequencer.skipCurrentCard();
+        expect(c.front).toEqual("Q3");
+        expect(c.remainingCount()).toEqual(1);
+
+        // A card that isn't waiting for review anymore can't be focused
+        expect(c.sequencer.focusCardObject(q2, TopicPath.emptyPath)).toEqual(false);
+        expect(c.front).toEqual("Q3");
+    });
+});

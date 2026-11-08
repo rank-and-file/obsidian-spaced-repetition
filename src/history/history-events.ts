@@ -136,16 +136,25 @@ export interface CardReviewedPayload extends CardRef {
     msSinceCardShown: number;
     // null if the answer wasn't shown before responding (e.g. "reset" from the front of the card)
     msSinceAnswerShown: number | null;
+    redoneEventId?: string;
 }
+
+/*
+ * About redoneEventId (card_reviewed, card_skipped, card_suspended): only present if the event re-applies an undone
+ * action (redo). It is the id of the undone event, whose timings (msSince...) are copied. The undone event itself
+ * stays ignored, so statistics should count the redo event like any other.
+ */
 
 export interface CardSkippedPayload extends CardRef {
     type: "card_skipped";
     msSinceCardShown: number;
+    redoneEventId?: string;
 }
 
 export interface CardSuspendedPayload extends CardRef {
     type: "card_suspended";
     msSinceCardShown: number;
+    redoneEventId?: string;
 }
 
 export interface CardUnsuspendedPayload extends CardRef {

@@ -43,6 +43,10 @@ export interface IBaseLocale {
     UNDO_ACTION_SKIP: string;
     UNDO_ACTION_SUSPEND: string;
     UNDO_FAILED: string;
+    REDO_LAST_ACTION: string;
+    NOTHING_TO_REDO: string;
+    REDO_DONE: string;
+    REDO_NOT_POSSIBLE: string;
 
     // Usage history
     USAGE_HISTORY: string;

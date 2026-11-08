@@ -52,6 +52,11 @@ const en: IBaseLocale = {
     UNDO_ACTION_SKIP: "skip",
     UNDO_ACTION_SUSPEND: "suspension",
     UNDO_FAILED: "Could not undo: ${error}",
+    REDO_LAST_ACTION: "Redo last undone action",
+    NOTHING_TO_REDO: "Nothing to redo.",
+    REDO_DONE: "Redone: ${action}.",
+    REDO_NOT_POSSIBLE:
+        "Can't redo: the card isn't waiting for review in this session anymore, or you left the cards.",
 
     // Usage history
     USAGE_HISTORY: "Usage history",

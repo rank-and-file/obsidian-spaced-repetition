@@ -354,6 +354,30 @@ describe("computeUsageStats", () => {
         expect(day.timeMs).toEqual(2_500);
     });
 
+    test("A redone action counts once", () => {
+        const start = localTs(2026, 11, 8, 10);
+        const review = makeEvent(reviewed("hard"), start);
+        const events: HistoryEvent[] = [
+            review,
+            makeEvent(
+                {
+                    type: "action_undone",
+                    undoneEventId: review.id,
+                    undoneEventType: "card_reviewed",
+                    cardId: "c1",
+                    notePath: "a.md",
+                },
+                start + 1_000,
+            ),
+            makeEvent({ ...reviewed("hard"), redoneEventId: review.id }, start + 2_000),
+        ];
+
+        const day = computeUsageStats(events, dayKeyOf, "2026-11-08").days[0];
+        expect(day.reviews).toEqual(1);
+        expect(day.responses.hard).toEqual(1);
+        expect(day.undone).toEqual(1);
+    });
+
     test("The start of day setting moves early reviews to the previous day", () => {
         const events = [makeEvent(reviewed("good"), localTs(2026, 11, 8, 3, 30))];
         expect(computeUsageStats(events, dayKeyOf, "2026-11-08").days[0].day).toEqual("2026-11-08");

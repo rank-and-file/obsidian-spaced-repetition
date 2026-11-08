@@ -18,7 +18,6 @@ import {
     HistoryEventPayload,
     reviewModeName,
     reviewResponseName,
-    UndoableEventType,
 } from "src/history/history-events";
 import { generateSessionId } from "src/history/history-recorder";
 import { t } from "src/lang/helpers";
@@ -86,17 +85,39 @@ type UndoableEvent = HistoryEventBase &
     (CardReviewedPayload | CardSkippedPayload | CardSuspendedPayload);
 
 /**
- * An action that can be undone (review, reset, skip, suspend).
+ * An action on the current card that can be undone and redone (review, reset, skip, suspend).
  */
+type UndoableAction =
+    | { type: "card_reviewed"; response: ReviewResponse }
+    | { type: "card_skipped" }
+    | { type: "card_suspended" };
+
 interface ReviewUndoEntry {
     snapshot: ReviewUndoSnapshot;
     // The review queue the action happened in. If the queue was reloaded since, only the stored state can be
     // restored, and the card is looked up in the new queue.
     sequencer: IFlashcardReviewSequencer;
     chosenDeckTopicPath: TopicPath;
-    eventType: UndoableEventType;
+    action: UndoableAction;
     // The recorded history event, null if recording the usage history is disabled
     event: UndoableEvent | null;
+}
+
+/**
+ * An undone action, which can be redone as long as nothing else was done since.
+ */
+interface RedoEntry {
+    action: UndoableAction;
+    card: Card;
+    // Redo is only possible within the review queue the action was undone in
+    sequencer: IFlashcardReviewSequencer;
+    sessionTopicPath: TopicPath;
+    // The history event of the undone action, null if recording the usage history was disabled
+    originalEvent: UndoableEvent | null;
+}
+
+interface RedoInfo {
+    originalEvent: UndoableEvent | null;
 }
 
 // Undo is available for this many of the latest actions
@@ -140,6 +161,8 @@ export default class ContentManager {
 
     // Latest action last
     private undoStack: ReviewUndoEntry[] = [];
+    // Latest undone action last
+    private redoStack: RedoEntry[] = [];
     // Actions that change the review queue (review, skip, suspend, undo) run one after another
     private actionQueue: Promise<void> = Promise.resolve();
 
@@ -183,6 +206,7 @@ export default class ContentManager {
             this._jumpToCurrentCard.bind(this),
             this._displayCurrentCardInfoNotice.bind(this),
             () => this._undoLastAction(),
+            () => this._redoLastUndoneAction(),
             closeModal,
         );
         this._updateUndoAvailability();
@@ -261,7 +285,8 @@ export default class ContentManager {
         this.cardContainer.closeSession();
         this.uiManager.setUIState(UIState.DeckList);
         this.deckContainer.showList(this.reviewSequencer, this.settings, this.reviewMode);
-        this._updateUndoAvailability();
+        // Leaving the cards ends the chance to redo, the cards may be reviewed in a different order now
+        this._clearRedoStack();
         await this._recordEvent({ type: "deck_list_shown" });
     }
 
@@ -564,25 +589,7 @@ export default class ContentManager {
 
     public async _skipCurrentCard() {
         if (this.reviewSequencer === null) return;
-        await this._runSerialized(async () => {
-            if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
-            const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
-            const card: Card = this._getCurrentCard();
-            const deck: TopicPath | null = this._getCurrentDeckTopicPath();
-            const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
-
-            const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
-            sequencer.skipCurrentCard();
-            sequencer.completeUndoSnapshot(snapshot);
-
-            const event = await this._recordCardEvent(card, deck, (ref) => ({
-                type: "card_skipped" as const,
-                ...ref,
-                msSinceCardShown,
-            }));
-            this._pushUndoEntry(snapshot, sequencer, "card_skipped", event);
-            await this._showNextCard();
-        });
+        await this._runSerialized(() => this._performAction({ type: "card_skipped" }, null));
     }
 
     public async _suspendCurrentCard(): Promise<void> {
@@ -598,26 +605,7 @@ export default class ContentManager {
         }
         this.lastPressedOnProcessReview = timeNow;
 
-        await this._runSerialized(async () => {
-            if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
-            const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
-            const card: Card = this._getCurrentCard();
-            const deck: TopicPath | null = this._getCurrentDeckTopicPath();
-            const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
-
-            const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
-            await sequencer.suspendCurrentCard();
-            sequencer.completeUndoSnapshot(snapshot);
-
-            const event = await this._recordCardEvent(card, deck, (ref) => ({
-                type: "card_suspended" as const,
-                ...ref,
-                msSinceCardShown,
-            }));
-            this._pushUndoEntry(snapshot, sequencer, "card_suspended", event);
-            new Notice(t("CARD_SUSPENDED"));
-            await this._showNextCard();
-        });
+        await this._runSerialized(() => this._performAction({ type: "card_suspended" }, null));
     }
 
     private _displayCurrentCardInfoNotice() {
@@ -644,41 +632,106 @@ export default class ContentManager {
         }
         this.lastPressedOnProcessReview = timeNow;
 
-        await this._runSerialized(async () => {
-            if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
-            const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
-            const card: Card = this._getCurrentCard();
-            const deck: TopicPath | null = this._getCurrentDeckTopicPath();
-            const isNew: boolean = card.isNew;
-            const scheduleBefore: RepItemScheduleInfo | null = card.scheduleInfo;
-            const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
-            const msSinceAnswerShown: number | null =
-                this.answerShownAt === null ? null : Date.now() - this.answerShownAt;
-
-            const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
-            await sequencer.processReview(response);
-            sequencer.completeUndoSnapshot(snapshot);
-
-            const event = await this._recordCardEvent(card, deck, (ref) => ({
-                type: "card_reviewed" as const,
-                ...ref,
-                mode: reviewModeName(this.reviewMode),
-                response: reviewResponseName(response),
-                isNew,
-                scheduleBefore: serializeSchedule(scheduleBefore),
-                scheduleAfter: serializeSchedule(card.scheduleInfo),
-                msSinceCardShown,
-                msSinceAnswerShown,
-            }));
-            this._pushUndoEntry(snapshot, sequencer, "card_reviewed", event);
-            await this._showNextCard();
-        });
+        await this._runSerialized(() =>
+            this._performAction({ type: "card_reviewed", response }, null),
+        );
     }
 
-    // MARK: Undo
+    /**
+     * Performs an undoable action on the current card, records it, and shows the next card.
+     *
+     * @param {UndoableAction} action - The action.
+     * @param {RedoInfo | null} redo - Set when redoing an undone action, null for a new action.
+     */
+    private async _performAction(action: UndoableAction, redo: RedoInfo | null): Promise<void> {
+        if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
+        // A new action makes the undone actions impossible to redo, like in any editor
+        if (redo === null) this._clearRedoStack();
+
+        const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
+        const card: Card = this._getCurrentCard();
+        const deck: TopicPath | null = this._getCurrentDeckTopicPath();
+        const isNew: boolean = card.isNew;
+        const scheduleBefore: RepItemScheduleInfo | null = card.scheduleInfo;
+        // A redo repeats the original action, including the time it took
+        const msSinceCardShown: number =
+            redo !== null && redo.originalEvent !== null
+                ? redo.originalEvent.msSinceCardShown
+                : this._msSince(this.cardShownAt, "card shown");
+        const msSinceAnswerShown: number | null =
+            redo !== null && redo.originalEvent !== null
+                ? redo.originalEvent.type === "card_reviewed"
+                    ? redo.originalEvent.msSinceAnswerShown
+                    : null
+                : this.answerShownAt === null
+                  ? null
+                  : Date.now() - this.answerShownAt;
+        const redone: { redoneEventId?: string } =
+            redo !== null && redo.originalEvent !== null
+                ? { redoneEventId: redo.originalEvent.id }
+                : {};
+
+        const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
+        switch (action.type) {
+            case "card_reviewed":
+                await sequencer.processReview(action.response);
+                break;
+            case "card_skipped":
+                sequencer.skipCurrentCard();
+                break;
+            case "card_suspended":
+                await sequencer.suspendCurrentCard();
+                break;
+        }
+        sequencer.completeUndoSnapshot(snapshot);
+
+        let event: UndoableEvent | null;
+        switch (action.type) {
+            case "card_reviewed":
+                event = await this._recordCardEvent(card, deck, (ref) => ({
+                    type: "card_reviewed" as const,
+                    ...ref,
+                    mode: reviewModeName(this.reviewMode),
+                    response: reviewResponseName(action.response),
+                    isNew,
+                    scheduleBefore: serializeSchedule(scheduleBefore),
+                    scheduleAfter: serializeSchedule(card.scheduleInfo),
+                    msSinceCardShown,
+                    msSinceAnswerShown,
+                    ...redone,
+                }));
+                break;
+            case "card_skipped":
+                event = await this._recordCardEvent(card, deck, (ref) => ({
+                    type: "card_skipped" as const,
+                    ...ref,
+                    msSinceCardShown,
+                    ...redone,
+                }));
+                break;
+            case "card_suspended":
+                event = await this._recordCardEvent(card, deck, (ref) => ({
+                    type: "card_suspended" as const,
+                    ...ref,
+                    msSinceCardShown,
+                    ...redone,
+                }));
+                new Notice(t("CARD_SUSPENDED"));
+                break;
+        }
+
+        this._pushUndoEntry(snapshot, sequencer, action, event);
+        await this._showNextCard();
+    }
+
+    // MARK: Undo & redo
 
     get canUndo(): boolean {
         return this.undoStack.length > 0;
+    }
+
+    get canRedo(): boolean {
+        return this.redoStack.length > 0;
     }
 
     /**
@@ -726,13 +779,13 @@ export default class ContentManager {
                 await this._recordEvent({
                     type: "action_undone",
                     undoneEventId: entry.event.id,
-                    undoneEventType: entry.eventType,
+                    undoneEventType: entry.action.type,
                     cardId: entry.event.cardId,
                     notePath: entry.event.notePath,
                 });
             }
 
-            const actionName: string = this._getUndoActionName(entry);
+            const actionName: string = this._getActionName(entry.action);
             if (!isCardInQueue) {
                 new Notice(t("UNDO_DONE_CARD_NOT_IN_QUEUE", { action: actionName }));
                 await this._showDecksList();
@@ -755,11 +808,52 @@ export default class ContentManager {
             } else {
                 await this._reviewDeck(chosenDeck);
             }
+
+            // Added after showing the card: showing the deck list clears the redo stack
+            this.redoStack.push({
+                action: entry.action,
+                card: this._getCurrentCard(),
+                sequencer: this.reviewSequencer,
+                sessionTopicPath: entry.snapshot.sessionTopicPath,
+                originalEvent: entry.event,
+            });
+            this._updateUndoAvailability();
         });
     }
 
-    private _getUndoActionName(entry: ReviewUndoEntry): string {
-        switch (entry.eventType) {
+    /**
+     * Redoes the latest undone action (in the same review session, unless something else was done since).
+     */
+    public async _redoLastUndoneAction(): Promise<void> {
+        await this._runSerialized(async () => {
+            const entry: RedoEntry | undefined = this.redoStack.pop();
+            if (entry === undefined) {
+                new Notice(t("NOTHING_TO_REDO"));
+                return;
+            }
+            this._updateUndoAvailability();
+
+            const isCardViewOpen: boolean =
+                this.uiManager.uiState === UIState.CardFront ||
+                this.uiManager.uiState === UIState.CardBack;
+            if (
+                !isCardViewOpen ||
+                this.reviewSequencer === null ||
+                entry.sequencer !== this.reviewSequencer ||
+                !this.reviewSequencer.focusCardObject(entry.card, entry.sessionTopicPath)
+            ) {
+                this._clearRedoStack();
+                new Notice(t("REDO_NOT_POSSIBLE"));
+                return;
+            }
+
+            await this._performAction(entry.action, { originalEvent: entry.originalEvent });
+            new Notice(t("REDO_DONE", { action: this._getActionName(entry.action) }));
+        });
+    }
+
+    private _getActionName(action: UndoableAction): string {
+        switch (action.type) {
             case "card_reviewed":
                 return t("UNDO_ACTION_REVIEW");
             case "card_skipped":
@@ -772,7 +866,7 @@ export default class ContentManager {
     private _pushUndoEntry(
         snapshot: ReviewUndoSnapshot,
         sequencer: IFlashcardReviewSequencer,
-        eventType: UndoableEventType,
+        action: UndoableAction,
         event: UndoableEvent | null,
     ): void {
         if (this.sessionData === null)
@@ -781,24 +875,34 @@ export default class ContentManager {
             snapshot,
             sequencer,
             chosenDeckTopicPath: this.sessionData.deckData.chosenDeck.getTopicPath(),
-            eventType,
+            action,
             event,
         });
         if (this.undoStack.length > MAX_UNDO_ENTRIES) this.undoStack.shift();
         this._updateUndoAvailability();
     }
 
+    private _clearRedoStack(): void {
+        this.redoStack = [];
+        this._updateUndoAvailability();
+    }
+
     private _updateUndoAvailability(): void {
-        this.cardContainer.setUndoAvailable(this.canUndo);
+        this.cardContainer.setUndoAvailable(this.canUndo, this.canRedo);
         this.deckContainer.setUndoAvailable(this.canUndo);
     }
 
     private _undoKeydownHandler = (e: KeyboardEvent): void => {
-        // Matched on the typed character, so that it is the key labeled "Z" on every keyboard layout (e.g. QWERTZ)
-        if (e.key.toLowerCase() !== "z" || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) {
-            return;
-        }
-        // With custom hotkeys, the "Undo" command (and its hotkey) is used instead
+        if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+        // Matched on the typed character, so that it is the key labeled "Z" (or "Y") on every keyboard layout
+        // (e.g. QWERTZ). Redo: Ctrl+Shift+Z / Cmd+Shift+Z, and Ctrl+Y as on Windows.
+        const key: string = e.key.toLowerCase();
+        let command: "undo" | "redo" | null = null;
+        if (key === "z") command = e.shiftKey ? "redo" : "undo";
+        else if (key === "y" && e.ctrlKey && !e.metaKey && !e.shiftKey) command = "redo";
+        if (command === null) return;
+
+        // With custom hotkeys, the "Undo" & "Redo" commands (and their hotkeys) are used instead
         if (this.plugin.dataManager.data.settings.useCustomHotkeys) return;
         if (!this.uiManager.getSRInFocusState()) return;
         const uiState: UIState = this.uiManager.uiState;
@@ -809,7 +913,7 @@ export default class ContentManager {
         ) {
             return;
         }
-        // Keep the native undo of text inputs (e.g. cloze inputs)
+        // Keep the native undo & redo of text inputs (e.g. cloze inputs)
         if (
             activeDocument.activeElement !== null &&
             (activeDocument.activeElement.nodeName === "TEXTAREA" ||
@@ -821,7 +925,8 @@ export default class ContentManager {
         e.preventDefault();
         e.stopPropagation();
         if (e.repeat) return;
-        void this._undoLastAction();
+        if (command === "undo") void this._undoLastAction();
+        else void this._redoLastUndoneAction();
     };
 
     /**
