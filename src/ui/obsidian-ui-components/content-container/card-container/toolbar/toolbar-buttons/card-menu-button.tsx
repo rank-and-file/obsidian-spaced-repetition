@@ -5,6 +5,7 @@ import MenuButtonComponent from "src/ui/obsidian-ui-components/content-container
 
 export default class CardMenuButtonComponent extends MenuButtonComponent {
     private isResetButtonDisabled: boolean;
+    private isUndoAvailable: boolean = false;
     public constructor(
         container: HTMLElement,
         isExtended: boolean,
@@ -18,6 +19,7 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
         skipCurrentCard: () => void,
         suspendCurrentCard: () => Promise<void>,
         onOpenResetModalClick: () => void,
+        undoLastAction: () => Promise<void>,
         closeModal?: () => void,
         classNames?: string[],
     ) {
@@ -38,6 +40,7 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
                     jumpToCurrentCard,
                     displayCurrentCardInfoNotice,
                     deleteCurrentCard,
+                    undoLastAction,
                     closeModal,
                 );
 
@@ -52,6 +55,10 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
         this.isResetButtonDisabled = disabled;
     }
 
+    public setUndoAvailable(available: boolean) {
+        this.isUndoAvailable = available;
+    }
+
     private buildMenu(
         cardMenu: Menu,
         showDeleteButton: boolean,
@@ -64,9 +71,18 @@ export default class CardMenuButtonComponent extends MenuButtonComponent {
         jumpToCurrentCard: () => Promise<void>,
         displayCurrentCardInfoNotice: () => void,
         deleteCurrentCard: () => void,
+        undoLastAction: () => Promise<void>,
         closeModal?: () => void,
     ) {
         if (isExtended) {
+            cardMenu.addItem((item) => {
+                item.setTitle(t("UNDO_LAST_ACTION"))
+                    .setIcon("undo-2")
+                    .onClick(async () => {
+                        await undoLastAction();
+                    })
+                    .setDisabled(!this.isUndoAvailable);
+            });
             cardMenu.addItem((item) => {
                 item.setTitle(t("EDIT_CARD"))
                     .setIcon("pencil")

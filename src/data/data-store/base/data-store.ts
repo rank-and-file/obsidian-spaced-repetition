@@ -2,6 +2,7 @@ import { IFileModifier } from "src/data/data-store/base/file-modifier";
 import { RepItemStorageInfo } from "src/data/data-store/base/rep-item-storage-info";
 import { Question } from "src/data/data-structures/card/questions/question";
 import { RepItemScheduleInfo } from "src/scheduling/algorithms/base/rep-item-schedule-info";
+import { CardStorageMetadata } from "src/utils/comment-parser";
 
 /**
  * All available data stores types.
@@ -34,13 +35,13 @@ export interface IDataStore {
     ): RepItemScheduleInfo[];
 
     /**
-     * Reads which cards of a question are suspended.
+     * Reads the stored per card metadata (suspended flag, card id) of a question.
      *
      * @param originalQuestionText
-     * @returns One entry per card that has stored scheduling information (same order as createSchedule()),
-     *          true if that card is suspended. Cards beyond the end of the list are not suspended.
+     * @returns One entry per card that has stored scheduling information (same order as createSchedule()).
+     *          Cards beyond the end of the list are neither suspended nor have an id.
      */
-    createSuspendedList(originalQuestionText: string): boolean[];
+    createCardMetadataList(originalQuestionText: string): CardStorageMetadata[];
 
     /**
      * Removes scheduling information from a question text.

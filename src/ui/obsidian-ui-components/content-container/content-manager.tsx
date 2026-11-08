@@ -5,16 +5,34 @@ import { DataManager } from "src/data/data-manager";
 import { Card } from "src/data/data-structures/card/card";
 import { Question } from "src/data/data-structures/card/questions/question";
 import { Deck } from "src/data/data-structures/deck/deck";
+import { TopicPath } from "src/data/data-structures/deck/topic-path";
+import { ISerializedScheduleEntry } from "src/data/plugin-data";
 import { SRSettings } from "src/data/settings";
+import {
+    CardRef,
+    CardReviewedPayload,
+    CardSkippedPayload,
+    CardSuspendedPayload,
+    formatDeckForHistory,
+    HistoryEventBase,
+    HistoryEventPayload,
+    reviewModeName,
+    reviewResponseName,
+    UndoableEventType,
+} from "src/history/history-events";
+import { generateSessionId } from "src/history/history-recorder";
 import { t } from "src/lang/helpers";
 import SRPlugin from "src/main";
 import { Note } from "src/note/note";
 import { RepItemScheduleInfo } from "src/scheduling/algorithms/base/rep-item-schedule-info";
 import { ReviewResponse } from "src/scheduling/algorithms/base/repetition-item";
 import {
+    createCardMatch,
     DeckStats,
     FlashcardReviewMode,
     IFlashcardReviewSequencer,
+    restoreUndoSnapshotPersistentState,
+    ReviewUndoSnapshot,
 } from "src/scheduling/flashcard-review-sequencer";
 import { CardContainer } from "src/ui/obsidian-ui-components/content-container/card-container/card-container";
 import CardInfoNotice from "src/ui/obsidian-ui-components/content-container/card-container/toolbar/toolbar-buttons/card-info-notice";
@@ -64,6 +82,32 @@ export interface SessionData {
     currentNote: Note;
 }
 
+type UndoableEvent = HistoryEventBase &
+    (CardReviewedPayload | CardSkippedPayload | CardSuspendedPayload);
+
+/**
+ * An action that can be undone (review, reset, skip, suspend).
+ */
+interface ReviewUndoEntry {
+    snapshot: ReviewUndoSnapshot;
+    // The review queue the action happened in. If the queue was reloaded since, only the stored state can be
+    // restored, and the card is looked up in the new queue.
+    sequencer: IFlashcardReviewSequencer;
+    chosenDeckTopicPath: TopicPath;
+    eventType: UndoableEventType;
+    // The recorded history event, null if recording the usage history is disabled
+    event: UndoableEvent | null;
+}
+
+// Undo is available for this many of the latest actions
+const MAX_UNDO_ENTRIES = 100;
+
+function serializeSchedule(
+    scheduleInfo: RepItemScheduleInfo | null,
+): ISerializedScheduleEntry | null {
+    return scheduleInfo === null ? null : scheduleInfo.serializeSchedule();
+}
+
 // TODO: Refactor/integrate this code with the backend
 
 /**
@@ -89,6 +133,16 @@ export default class ContentManager {
     private lastPressedOnProcessReview: number = 0;
     private pendingResumeTimeout: number | null = null;
 
+    // Usage history
+    private sessionId: string | null = null;
+    private cardShownAt: number | null = null;
+    private answerShownAt: number | null = null;
+
+    // Latest action last
+    private undoStack: ReviewUndoEntry[] = [];
+    // Actions that change the review queue (review, skip, suspend, undo) run one after another
+    private actionQueue: Promise<void> = Promise.resolve();
+
     constructor(
         app: App,
         plugin: SRPlugin,
@@ -110,6 +164,7 @@ export default class ContentManager {
             parentEl,
             this._changeReviewMode.bind(this),
             this._startReviewOfDeck.bind(this),
+            () => this._undoLastAction(),
             closeModal,
         );
 
@@ -127,19 +182,34 @@ export default class ContentManager {
             this._showAnswer.bind(this),
             this._jumpToCurrentCard.bind(this),
             this._displayCurrentCardInfoNotice.bind(this),
+            () => this._undoLastAction(),
             closeModal,
         );
+        this._updateUndoAvailability();
     }
 
     public close() {
         this._clearPendingResumeTimeout();
+        activeDocument.removeEventListener("keydown", this._undoKeydownHandler);
         this.uiManager.setSRViewInFocus(false);
         this.deckContainer.closeList();
         this.cardContainer.closeSession();
         this.uiManager.setUIState(UIState.Closed);
+        if (this.sessionId !== null) {
+            void this._recordEvent({ type: "session_ended" });
+        }
     }
 
     public async open() {
+        this.sessionId = generateSessionId();
+        const singleNote = this.reviewQueueLoader.getSingleNote();
+        await this._recordEvent({
+            type: "session_started",
+            mode: reviewModeName(this.reviewMode),
+            singleNotePath: singleNote === null ? null : singleNote.path,
+        });
+        activeDocument.addEventListener("keydown", this._undoKeydownHandler);
+
         // Prepare a review queue to display
         this.reviewSequencer = await this.reviewQueueLoader.loadReviewQueue();
 
@@ -191,6 +261,8 @@ export default class ContentManager {
         this.cardContainer.closeSession();
         this.uiManager.setUIState(UIState.DeckList);
         this.deckContainer.showList(this.reviewSequencer, this.settings, this.reviewMode);
+        this._updateUndoAvailability();
+        await this._recordEvent({ type: "deck_list_shown" });
     }
 
     private async _reviewDeck(deck: Deck): Promise<void> {
@@ -198,7 +270,9 @@ export default class ContentManager {
         this.sessionData = this._getNewSessionData(deck);
         if (this.sessionData === null) return;
         this.uiManager.setUIState(UIState.CardFront);
+        await this._recordCardShown();
         await this.cardContainer.openSession(this.sessionData, this.settings);
+        this._updateUndoAvailability();
     }
 
     private async _showNextCard(): Promise<void> {
@@ -254,7 +328,9 @@ export default class ContentManager {
             this.sessionData.cardData.currentCard !== null &&
             this.sessionData.cardData.currentCard !== undefined
         ) {
+            await this._recordCardShown();
             await this.cardContainer.drawCardFront(this.sessionData, this.settings);
+            this._updateUndoAvailability();
         } else {
             await this._showDecksList(true);
         }
@@ -343,6 +419,11 @@ export default class ContentManager {
             t("CANCEL"),
             async () => {
                 if (this.sessionData === null || this.reviewSequencer === null) return;
+                const card: Card = this._getCurrentCard();
+                await this._recordCardEvent(card, this._getCurrentDeckTopicPath(), (ref) => ({
+                    type: "card_deleted",
+                    ...ref,
+                }));
                 await this.reviewSequencer.deleteCurrentCardFromNote();
                 await this._showNextCard();
             },
@@ -371,6 +452,14 @@ export default class ContentManager {
             this.settings,
             this._determineButtonSchedule.bind(this),
         );
+
+        const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
+        this.answerShownAt = Date.now();
+        await this._recordCardEvent(
+            this._getCurrentCard(),
+            this._getCurrentDeckTopicPath(),
+            (ref) => ({ type: "answer_shown", ...ref, msSinceCardShown }),
+        );
     }
 
     private async _doEditQuestionText(): Promise<void> {
@@ -393,6 +482,11 @@ export default class ContentManager {
             .then(async (modifiedCardText) => {
                 if (this.reviewSequencer === null) return;
                 await this.reviewSequencer.updateCurrentQuestionTextAndCards(modifiedCardText);
+                await this._recordCardEvent(
+                    this._getCurrentCard(),
+                    this._getCurrentDeckTopicPath(),
+                    (ref) => ({ type: "card_edited", ...ref }),
+                );
                 this.uiManager.setUIState(currentUIState);
 
                 if (this.sessionData !== null) {
@@ -417,6 +511,11 @@ export default class ContentManager {
         if (this.reviewSequencer === null) return;
         const currentQuestion = this.reviewSequencer.currentQuestion;
         if (!currentQuestion) return;
+        await this._recordCardEvent(
+            this._getCurrentCard(),
+            this._getCurrentDeckTopicPath(),
+            (ref) => ({ type: "card_opened_in_note", ...ref }),
+        );
 
         if (
             (!this.settings.openViewInNewTab &&
@@ -465,8 +564,25 @@ export default class ContentManager {
 
     public async _skipCurrentCard() {
         if (this.reviewSequencer === null) return;
-        this.reviewSequencer.skipCurrentCard();
-        await this._showNextCard();
+        await this._runSerialized(async () => {
+            if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
+            const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
+            const card: Card = this._getCurrentCard();
+            const deck: TopicPath | null = this._getCurrentDeckTopicPath();
+            const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
+
+            const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
+            sequencer.skipCurrentCard();
+            sequencer.completeUndoSnapshot(snapshot);
+
+            const event = await this._recordCardEvent(card, deck, (ref) => ({
+                type: "card_skipped" as const,
+                ...ref,
+                msSinceCardShown,
+            }));
+            this._pushUndoEntry(snapshot, sequencer, "card_skipped", event);
+            await this._showNextCard();
+        });
     }
 
     public async _suspendCurrentCard(): Promise<void> {
@@ -482,9 +598,26 @@ export default class ContentManager {
         }
         this.lastPressedOnProcessReview = timeNow;
 
-        await this.reviewSequencer.suspendCurrentCard();
-        new Notice(t("CARD_SUSPENDED"));
-        await this._showNextCard();
+        await this._runSerialized(async () => {
+            if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
+            const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
+            const card: Card = this._getCurrentCard();
+            const deck: TopicPath | null = this._getCurrentDeckTopicPath();
+            const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
+
+            const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
+            await sequencer.suspendCurrentCard();
+            sequencer.completeUndoSnapshot(snapshot);
+
+            const event = await this._recordCardEvent(card, deck, (ref) => ({
+                type: "card_suspended" as const,
+                ...ref,
+                msSinceCardShown,
+            }));
+            this._pushUndoEntry(snapshot, sequencer, "card_suspended", event);
+            new Notice(t("CARD_SUSPENDED"));
+            await this._showNextCard();
+        });
     }
 
     private _displayCurrentCardInfoNotice() {
@@ -492,6 +625,11 @@ export default class ContentManager {
         new CardInfoNotice(
             this.sessionData.cardData.currentCard.scheduleInfo,
             this.sessionData.currentNote.file.path,
+        );
+        void this._recordCardEvent(
+            this._getCurrentCard(),
+            this._getCurrentDeckTopicPath(),
+            (ref) => ({ type: "card_info_viewed", ...ref }),
         );
     }
 
@@ -506,14 +644,261 @@ export default class ContentManager {
         }
         this.lastPressedOnProcessReview = timeNow;
 
-        await this.reviewSequencer.processReview(response);
-        await this._showNextCard();
+        await this._runSerialized(async () => {
+            if (this.reviewSequencer === null || !this.reviewSequencer.hasCurrentCard) return;
+            const sequencer: IFlashcardReviewSequencer = this.reviewSequencer;
+            const card: Card = this._getCurrentCard();
+            const deck: TopicPath | null = this._getCurrentDeckTopicPath();
+            const isNew: boolean = card.isNew;
+            const scheduleBefore: RepItemScheduleInfo | null = card.scheduleInfo;
+            const msSinceCardShown: number = this._msSince(this.cardShownAt, "card shown");
+            const msSinceAnswerShown: number | null =
+                this.answerShownAt === null ? null : Date.now() - this.answerShownAt;
+
+            const snapshot: ReviewUndoSnapshot = sequencer.createUndoSnapshot();
+            await sequencer.processReview(response);
+            sequencer.completeUndoSnapshot(snapshot);
+
+            const event = await this._recordCardEvent(card, deck, (ref) => ({
+                type: "card_reviewed" as const,
+                ...ref,
+                mode: reviewModeName(this.reviewMode),
+                response: reviewResponseName(response),
+                isNew,
+                scheduleBefore: serializeSchedule(scheduleBefore),
+                scheduleAfter: serializeSchedule(card.scheduleInfo),
+                msSinceCardShown,
+                msSinceAnswerShown,
+            }));
+            this._pushUndoEntry(snapshot, sequencer, "card_reviewed", event);
+            await this._showNextCard();
+        });
+    }
+
+    // MARK: Undo
+
+    get canUndo(): boolean {
+        return this.undoStack.length > 0;
+    }
+
+    /**
+     * Undoes the latest review, reset, skip or suspension, and shows that card again.
+     */
+    public async _undoLastAction(): Promise<void> {
+        await this._runSerialized(async () => {
+            const entry: ReviewUndoEntry | undefined = this.undoStack.pop();
+            if (entry === undefined) {
+                new Notice(t("NOTHING_TO_UNDO"));
+                return;
+            }
+            this._updateUndoAvailability();
+
+            const isSameQueue: boolean = entry.sequencer === this.reviewSequencer;
+            let isCardInQueue: boolean = true;
+            try {
+                if (isSameQueue) {
+                    await entry.sequencer.undo(entry.snapshot);
+                } else {
+                    // The review queue was reloaded since (e.g. after finishing a deck). Restore what is stored,
+                    // then look the card up in the reloaded queue.
+                    await restoreUndoSnapshotPersistentState(
+                        entry.snapshot,
+                        this.dataManager.osrCore.questionPostponementList,
+                    );
+                    this.reviewSequencer = await this.reviewQueueLoader.loadReviewQueue();
+                    isCardInQueue = this.reviewSequencer.focusCard(
+                        createCardMatch(entry.snapshot.card),
+                        entry.snapshot.sessionTopicPath,
+                    );
+                }
+            } catch (error) {
+                // Undo is triggered from key presses and buttons, so without this the error would only show up in
+                // the developer console
+                new Notice(
+                    t("UNDO_FAILED", {
+                        error: error instanceof Error ? error.message : String(error),
+                    }),
+                );
+                throw error;
+            }
+
+            if (entry.event !== null) {
+                await this._recordEvent({
+                    type: "action_undone",
+                    undoneEventId: entry.event.id,
+                    undoneEventType: entry.eventType,
+                    cardId: entry.event.cardId,
+                    notePath: entry.event.notePath,
+                });
+            }
+
+            const actionName: string = this._getUndoActionName(entry);
+            if (!isCardInQueue) {
+                new Notice(t("UNDO_DONE_CARD_NOT_IN_QUEUE", { action: actionName }));
+                await this._showDecksList();
+                return;
+            }
+            new Notice(t("UNDO_DONE", { action: actionName }));
+
+            if (this.reviewSequencer === null) throw new Error("Undo: no review queue");
+            const chosenDeck: Deck =
+                this.reviewSequencer.originalDeckTree.getDeck(entry.chosenDeckTopicPath) ??
+                this.reviewSequencer.originalDeckTree;
+            const isCardViewOpen: boolean =
+                this.uiManager.uiState === UIState.CardFront ||
+                this.uiManager.uiState === UIState.CardBack;
+            if (isCardViewOpen) {
+                if (!isSameQueue || this.sessionData === null) {
+                    this.sessionData = this._getNewSessionData(chosenDeck);
+                }
+                await this._showNextCard();
+            } else {
+                await this._reviewDeck(chosenDeck);
+            }
+        });
+    }
+
+    private _getUndoActionName(entry: ReviewUndoEntry): string {
+        switch (entry.eventType) {
+            case "card_reviewed":
+                return t("UNDO_ACTION_REVIEW");
+            case "card_skipped":
+                return t("UNDO_ACTION_SKIP");
+            case "card_suspended":
+                return t("UNDO_ACTION_SUSPEND");
+        }
+    }
+
+    private _pushUndoEntry(
+        snapshot: ReviewUndoSnapshot,
+        sequencer: IFlashcardReviewSequencer,
+        eventType: UndoableEventType,
+        event: UndoableEvent | null,
+    ): void {
+        if (this.sessionData === null)
+            throw new Error("Cannot add an undo entry without a session");
+        this.undoStack.push({
+            snapshot,
+            sequencer,
+            chosenDeckTopicPath: this.sessionData.deckData.chosenDeck.getTopicPath(),
+            eventType,
+            event,
+        });
+        if (this.undoStack.length > MAX_UNDO_ENTRIES) this.undoStack.shift();
+        this._updateUndoAvailability();
+    }
+
+    private _updateUndoAvailability(): void {
+        this.cardContainer.setUndoAvailable(this.canUndo);
+        this.deckContainer.setUndoAvailable(this.canUndo);
+    }
+
+    private _undoKeydownHandler = (e: KeyboardEvent): void => {
+        // Matched on the typed character, so that it is the key labeled "Z" on every keyboard layout (e.g. QWERTZ)
+        if (e.key.toLowerCase() !== "z" || !(e.ctrlKey || e.metaKey) || e.shiftKey || e.altKey) {
+            return;
+        }
+        // With custom hotkeys, the "Undo" command (and its hotkey) is used instead
+        if (this.plugin.dataManager.data.settings.useCustomHotkeys) return;
+        if (!this.uiManager.getSRInFocusState()) return;
+        const uiState: UIState = this.uiManager.uiState;
+        if (
+            uiState !== UIState.DeckList &&
+            uiState !== UIState.CardFront &&
+            uiState !== UIState.CardBack
+        ) {
+            return;
+        }
+        // Keep the native undo of text inputs (e.g. cloze inputs)
+        if (
+            activeDocument.activeElement !== null &&
+            (activeDocument.activeElement.nodeName === "TEXTAREA" ||
+                activeDocument.activeElement.nodeName === "INPUT")
+        ) {
+            return;
+        }
+
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.repeat) return;
+        void this._undoLastAction();
+    };
+
+    /**
+     * Runs actions that change the review queue one after another, so that e.g. an undo pressed while a review is
+     * still being saved applies to that review.
+     */
+    private _runSerialized(action: () => Promise<void>): Promise<void> {
+        const result: Promise<void> = this.actionQueue.then(action);
+        // The caller gets the error of a failed action. The queue itself continues with the next action.
+        this.actionQueue = result.then(
+            (): void => undefined,
+            (): void => undefined,
+        );
+        return result;
+    }
+
+    // MARK: Usage history
+
+    private async _recordEvent(payload: HistoryEventPayload): Promise<void> {
+        await this.plugin.historyRecorder.record(payload, this.sessionId);
+    }
+
+    /**
+     * Records an event about a card. The card gets an id first, if it doesn't have one yet.
+     *
+     * @returns The event, or null if recording the usage history is disabled.
+     */
+    private async _recordCardEvent<P extends HistoryEventPayload>(
+        card: Card,
+        deck: TopicPath | null,
+        createPayload: (ref: CardRef) => P,
+    ): Promise<(HistoryEventBase & P) | null> {
+        const recorder = this.plugin.historyRecorder;
+        if (!recorder.enabled) return null;
+        const ref: CardRef = await recorder.cardRef(card, deck);
+        return await recorder.record(createPayload(ref), this.sessionId);
+    }
+
+    private async _recordCardShown(): Promise<void> {
+        const card: Card = this._getCurrentCard();
+        await this._recordCardEvent(card, this._getCurrentDeckTopicPath(), (ref) => ({
+            type: "card_shown",
+            ...ref,
+            mode: reviewModeName(this.reviewMode),
+            isNew: card.isNew,
+            schedule: serializeSchedule(card.scheduleInfo),
+        }));
+        this.cardShownAt = Date.now();
+        this.answerShownAt = null;
+    }
+
+    private _getCurrentCard(): Card {
+        if (this.reviewSequencer === null) throw new Error("No review queue");
+        const card: Card | null = this.reviewSequencer.currentCard;
+        if (card === null) throw new Error("No current card");
+        return card;
+    }
+
+    private _getCurrentDeckTopicPath(): TopicPath | null {
+        if (this.reviewSequencer === null) throw new Error("No review queue");
+        const deck: Deck | null = this.reviewSequencer.currentDeck;
+        return deck === null ? null : deck.getTopicPath();
+    }
+
+    private _msSince(ts: number | null, what: string): number {
+        if (ts === null) throw new Error(`Usage history: time of "${what}" is unknown`);
+        return Date.now() - ts;
     }
 
     // MARK: Deck button handlers
 
     private async _startReviewOfDeck(deck: Deck) {
         if (this.reviewSequencer === null) return;
+        await this._recordEvent({
+            type: "deck_review_started",
+            deck: formatDeckForHistory(deck.getTopicPath()),
+        });
         this.reviewSequencer.setCurrentDeck(deck.getTopicPath());
         if (this.reviewSequencer.hasCurrentCard) {
             await this._reviewDeck(deck);
@@ -525,6 +910,7 @@ export default class ContentManager {
     private async _changeReviewMode(reviewMode: FlashcardReviewMode) {
         this.reviewQueueLoader.setReviewMode(reviewMode);
         this.reviewMode = reviewMode;
+        await this._recordEvent({ type: "review_mode_changed", mode: reviewModeName(reviewMode) });
         this.reviewSequencer = await this.reviewQueueLoader.loadReviewQueue();
         this.deckContainer.closeList();
         await this._showDecksList();

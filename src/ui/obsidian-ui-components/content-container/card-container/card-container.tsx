@@ -62,6 +62,7 @@ export class CardContainer {
         showAnswerHandler: () => void,
         jumpToCurrentCardHandler: () => Promise<void>,
         displayCurrentCardInfoNoticeHandler: () => void,
+        undoLastActionHandler: () => Promise<void>,
         closeModal?: () => void,
     ) {
         // Init properties
@@ -101,6 +102,7 @@ export class CardContainer {
                     },
                 ).open();
             },
+            undoLastActionHandler,
             closeModal,
         );
 
@@ -164,6 +166,15 @@ export class CardContainer {
         } else {
             activeDocument.removeEventListener("keydown", this._keydownHandler);
         }
+    }
+
+    /**
+     * Sets whether there is an action to undo (enables the undo button)
+     *
+     * @param available
+     */
+    public setUndoAvailable(available: boolean) {
+        this.toolbar.setUndoAvailable(available);
     }
 
     public async drawCardFront(sessionData: SessionData, settings: SRSettings) {

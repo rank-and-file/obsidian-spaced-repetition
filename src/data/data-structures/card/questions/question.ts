@@ -154,6 +154,9 @@ export class QuestionText {
             // actualQuestion - Question [whitespace blockId]
             let postTopicPathWs: string;
             [postTopicPathWs, actualQuestion] = stringTrimStart(cardText3);
+            // Trailing whitespace is always removed (see the class comment). Without this, a question followed by
+            // its scheduling comment on the next line would keep that line break.
+            actualQuestion = actualQuestion.trimEnd();
             if (!settings.convertFoldersToDecks) {
                 topicPathWithWs = new TopicPathWithWs(topicPath, preTopicPathWs, postTopicPathWs);
             }
@@ -231,9 +234,9 @@ export class Question {
     formatForNote(settings: SRSettings): string {
         let result: string = this.questionText.formatTopicAndQuestion();
         const blockId: string = this.questionText.obsidianBlockId;
-        // A suspended card needs the SR comment to store its suspended flag, even if it was never reviewed
+        // A suspended card or a card with an id needs the SR comment to store that, even if it was never reviewed
         const hasSchedule: boolean = this.cards.some(
-            (card) => card.hasSchedule || card.isSuspended,
+            (card) => card.hasSchedule || card.isSuspended || card.id !== null,
         );
         if (hasSchedule) {
             result = result.trimEnd();

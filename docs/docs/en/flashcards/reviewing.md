@@ -40,7 +40,7 @@ Although you may want to review or cram all cards across all decks, you often ma
 4 | Skip | Skip the current card without reviewing
 5 | Delete | Delete the card from the note
 
-The toolbar also has a **Suspend** button (pause icon; on narrow screens it is in the `⋮` card menu) that [suspends](#suspending-cards) the current card.
+The toolbar also has a **Suspend** button (pause icon; on narrow screens it is in the `⋮` card menu) that [suspends](#suspending-cards) the current card, and an **Undo** button (on narrow screens also in the `⋮` card menu) that [undoes](#undo) your last action.
 
 ### Context
 
@@ -81,8 +81,9 @@ To review faster, use the following keyboard shortcuts:
 - `3` => Review as `Easy`
 - `S` => Skip the card
 - `@` => [Suspend](#suspending-cards) the card
+- `Ctrl+Z` (`Cmd+Z` on macOS) => [Undo](#undo) the last action
 
-If you enabled custom hotkeys in the settings, assign them to the `Spaced Repetition: Suspend card` command (and the other review commands) instead.
+If you enabled custom hotkeys in the settings, assign them to the `Spaced Repetition: Suspend card` and `Spaced Repetition: Undo last action` commands (and the other review commands) instead.
 
 ### Suspending cards
 
@@ -103,6 +104,24 @@ To unsuspend cards, do one of these:
 - Remove `,suspended` from the card's scheduling comment by hand.
 
 Suspended cards are not counted in the deck counts or statistics.
+
+### Undo
+
+Press `Ctrl+Z` (`Cmd+Z` on macOS) or click the **Undo** button to undo your last action in the review session, like in Anki. You can undo:
+
+- a review (`Hard`, `Good`, `Easy`, ...) and a reset,
+- a skip,
+- a suspension.
+
+Undo puts the card's schedule (and suspended flag) back to what it was, and shows the card again. If the review [buried the sibling cards](../user-options.md#flashcard-review), they are un-buried. Press undo again to undo the action before, up to the last 100 actions.
+
+You can also undo after the last card of a deck, when the deck list is shown again. The deck list then has an **Undo** button too.
+
+Undo is available until you close the review. Deleting and editing a card can't be undone this way.
+
+!!! note
+
+    Undo can't restore a card whose text you changed in the note (outside of the review) after the action. You then get an error, and nothing is changed.
 
 ---
 

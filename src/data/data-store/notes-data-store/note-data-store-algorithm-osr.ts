@@ -1,4 +1,9 @@
-import { SR_HTML_COMMENT_BEGIN, SR_HTML_COMMENT_END, SR_SUSPENDED_FLAG } from "src/data/constants";
+import {
+    SR_CARD_ID_PREFIX,
+    SR_HTML_COMMENT_BEGIN,
+    SR_HTML_COMMENT_END,
+    SR_SUSPENDED_FLAG,
+} from "src/data/constants";
 import { IDataStoreAlgorithm } from "src/data/data-store/base/idata-store-algorithm";
 import { Card } from "src/data/data-structures/card/card";
 import { Question } from "src/data/data-structures/card/questions/question";
@@ -44,6 +49,9 @@ export class NoteDataStoreAlgorithmOsr implements IDataStoreAlgorithm {
                 : // TODO: Provide a default schedule for the FSRS algorithm
                   `!${RepItemScheduleInfoOsr.dummyDueDateForNewCard},${RepItemScheduleInfoOsr.initialInterval},${this.settings.baseEase}`;
 
-        return card.isSuspended ? `${schedule},${SR_SUSPENDED_FLAG}` : schedule;
+        let result: string = schedule;
+        if (card.isSuspended) result += `,${SR_SUSPENDED_FLAG}`;
+        if (card.id !== null) result += `,${SR_CARD_ID_PREFIX}${card.id}`;
+        return result;
     }
 }

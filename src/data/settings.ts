@@ -87,6 +87,9 @@ export interface SRSettings {
     cardCommentOnSameLine: boolean;
     scheduleDataVaultLocation: string;
 
+    // usage history
+    recordUsageHistory: boolean;
+
     // logging
     showSchedulingDebugMessages: boolean;
     showParserDebugMessages: boolean;
@@ -176,6 +179,9 @@ export const DEFAULT_SETTINGS: SRSettings = {
     dataStore: StorageType.NOTES,
     cardCommentOnSameLine: false,
     scheduleDataVaultLocation: "Spaced Repetition",
+
+    // usage history
+    recordUsageHistory: true,
 
     // logging
     showSchedulingDebugMessages: false,

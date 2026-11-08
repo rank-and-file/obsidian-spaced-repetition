@@ -49,6 +49,7 @@ export class CommandManager {
         this.plugin.removeCommand("srs-card-review-reset");
         this.plugin.removeCommand("srs-card-review-skip");
         this.plugin.removeCommand("srs-card-review-suspend");
+        this.plugin.removeCommand("srs-card-review-undo");
     }
 
     /**
@@ -260,6 +261,34 @@ export class CommandManager {
                 ) {
                     if (!checking) {
                         void this.uiManager.contentManager._suspendCurrentCard();
+                    }
+                    return true;
+                }
+                return false;
+            },
+        });
+
+        this.plugin.addCommand({
+            id: "srs-card-review-undo",
+            name: t("UNDO_LAST_ACTION"),
+            repeatable: false,
+            checkCallback: (checking: boolean) => {
+                if (
+                    this.plugin.isInitialized &&
+                    (this.uiManager.uiState === UIState.DeckList ||
+                        this.uiManager.uiState === UIState.CardBack ||
+                        this.uiManager.uiState === UIState.CardFront) &&
+                    this.uiManager.isSRInFocus &&
+                    this.uiManager.contentManager !== null &&
+                    this.uiManager.contentManager.canUndo &&
+                    !(
+                        activeDocument.activeElement !== null &&
+                        (activeDocument.activeElement.nodeName === "TEXTAREA" ||
+                            activeDocument.activeElement.nodeName === "INPUT")
+                    )
+                ) {
+                    if (!checking) {
+                        void this.uiManager.contentManager._undoLastAction();
                     }
                     return true;
                 }

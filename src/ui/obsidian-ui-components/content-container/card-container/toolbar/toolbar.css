@@ -68,7 +68,8 @@
 .is-phone .sr-card-toolbar .sr-short-menu-button,
 .is-phone .sr-card-toolbar > .sr-divider,
 .is-phone .sr-card-toolbar .sr-skip-button,
-.is-phone .sr-card-toolbar .sr-suspend-button {
+.is-phone .sr-card-toolbar .sr-suspend-button,
+.is-phone .sr-card-toolbar .sr-undo-button {
     display: none;
 }
 
@@ -91,7 +92,8 @@
     .is-mobile .sr-card-toolbar .sr-short-menu-button,
     .is-mobile .sr-card-toolbar > .sr-divider,
     .is-mobile .sr-card-toolbar .sr-skip-button,
-    .is-mobile .sr-card-toolbar .sr-suspend-button {
+    .is-mobile .sr-card-toolbar .sr-suspend-button,
+    .is-mobile .sr-card-toolbar .sr-undo-button {
         display: none;
     }
 
@@ -120,7 +122,8 @@
     .sr-card-toolbar .sr-short-menu-button,
     .sr-card-toolbar > .sr-divider,
     .sr-card-toolbar .sr-skip-button,
-    .sr-card-toolbar .sr-suspend-button {
+    .sr-card-toolbar .sr-suspend-button,
+    .sr-card-toolbar .sr-undo-button {
         display: none;
     }
 

@@ -184,13 +184,13 @@ test("Placeholder schedules preserve middle FSRS sibling indexes", () => {
 
 describe("Suspended cards", () => {
     test("No schedule info means no suspended cards", () => {
-        expect(DataStore.getInstance().createSuspendedList("A::B")).toEqual([]);
+        expect(DataStore.getInstance().createCardMetadataList("A::B")).toEqual([]);
     });
 
     test("Schedule without suspended flag", () => {
         expect(
-            DataStore.getInstance().createSuspendedList("A::B <!--SR:!2023-09-02,4,270-->"),
-        ).toEqual([false]);
+            DataStore.getInstance().createCardMetadataList("A::B <!--SR:!2023-09-02,4,270-->"),
+        ).toEqual([{ isSuspended: false, id: null }]);
     });
 
     test("Suspended flag does not change the parsed schedule", () => {
@@ -199,7 +199,9 @@ describe("Suspended cards", () => {
         expect(DataStore.getInstance().createSchedule(text, null)).toEqual([
             RepItemScheduleInfoOsr.fromDueDateStr("2023-09-02", 4, 270, -4 * TICKS_PER_DAY),
         ]);
-        expect(DataStore.getInstance().createSuspendedList(text)).toEqual([true]);
+        expect(DataStore.getInstance().createCardMetadataList(text)).toEqual([
+            { isSuspended: true, id: null },
+        ]);
     });
 
     test("Suspended flag on new, SM-2 and FSRS sibling cards", () => {
@@ -227,6 +229,68 @@ describe("Suspended cards", () => {
             "2023-09-06T00:00:00.000Z",
         );
 
-        expect(DataStore.getInstance().createSuspendedList(text)).toEqual([true, false, true]);
+        expect(
+            DataStore.getInstance()
+                .createCardMetadataList(text)
+                .map((metadata) => metadata.isSuspended),
+        ).toEqual([true, false, true]);
+    });
+});
+
+describe("Card ids", () => {
+    test("Card id does not change the parsed schedule", () => {
+        const text: string = "A::B <!--SR:!2023-09-02,4,270,id=k2n8x0c4qz7m-->";
+
+        expect(DataStore.getInstance().createSchedule(text, null)).toEqual([
+            RepItemScheduleInfoOsr.fromDueDateStr("2023-09-02", 4, 270, -4 * TICKS_PER_DAY),
+        ]);
+        expect(DataStore.getInstance().createCardMetadataList(text)).toEqual([
+            { isSuspended: false, id: "k2n8x0c4qz7m" },
+        ]);
+    });
+
+    test("Card ids and suspended flags in any order, on new, SM-2 and FSRS sibling cards", () => {
+        const text: string =
+            "A::B <!--SR:!2000-01-01,1,250,id=aaa111!2023-09-02,4,270,suspended,id=bbb222!fsrs,2023-09-06T00:10:00.000Z,0,0.4,5.5,1,1,0,1,2023-09-06T00:00:00.000Z,id=ccc333,suspended!2023-09-02,5,270-->";
+
+        const schedules: RepItemScheduleInfo[] = DataStore.getInstance().createSchedule(text, null);
+        expect(schedules).toHaveLength(4);
+        expect(schedules[0]).toBeNull();
+        expect(schedules[1]).toEqual(
+            RepItemScheduleInfoOsr.fromDueDateStr("2023-09-02", 4, 270, -4 * TICKS_PER_DAY),
+        );
+        expect(schedules[2]).toBeInstanceOf(RepItemScheduleInfoFsrs);
+        expect((schedules[2] as RepItemScheduleInfoFsrs).lastReview.toDate().toISOString()).toEqual(
+            "2023-09-06T00:00:00.000Z",
+        );
+        expect(schedules[3]).toEqual(
+            RepItemScheduleInfoOsr.fromDueDateStr("2023-09-02", 5, 270, -4 * TICKS_PER_DAY),
+        );
+
+        expect(DataStore.getInstance().createCardMetadataList(text)).toEqual([
+            { isSuspended: false, id: "aaa111" },
+            { isSuspended: true, id: "bbb222" },
+            { isSuspended: true, id: "ccc333" },
+            { isSuspended: false, id: null },
+        ]);
+    });
+
+    test("Invalid card id throws", () => {
+        expect(() =>
+            DataStore.getInstance().createCardMetadataList("A::B <!--SR:!2023-09-02,4,270,id=-->"),
+        ).toThrow(/Invalid card id/);
+        expect(() =>
+            DataStore.getInstance().createCardMetadataList(
+                "A::B <!--SR:!2023-09-02,4,270,id=a b-->",
+            ),
+        ).toThrow(/Invalid card id/);
+    });
+
+    test("Two card ids for one card throws", () => {
+        expect(() =>
+            DataStore.getInstance().createCardMetadataList(
+                "A::B <!--SR:!2023-09-02,4,270,id=abc,id=def-->",
+            ),
+        ).toThrow(/More than one card id/);
     });
 });

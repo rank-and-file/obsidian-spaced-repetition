@@ -10,6 +10,7 @@ import EditButtonComponent from "src/ui/obsidian-ui-components/content-container
 import ResetButtonComponent from "src/ui/obsidian-ui-components/content-container/card-container/toolbar/toolbar-buttons/reset-button";
 import SkipButtonComponent from "src/ui/obsidian-ui-components/content-container/card-container/toolbar/toolbar-buttons/skip-button";
 import SuspendButtonComponent from "src/ui/obsidian-ui-components/content-container/card-container/toolbar/toolbar-buttons/suspend-button";
+import UndoButtonComponent from "src/ui/obsidian-ui-components/content-container/card-container/toolbar/toolbar-buttons/undo-button";
 import ModalCloseButtonComponent from "src/ui/obsidian-ui-components/content-container/modal-close-button";
 import EmulatedPlatform from "src/utils/platform-detector";
 
@@ -17,6 +18,7 @@ export default class CardToolbarComponent {
     private toolbar: HTMLDivElement;
     private infoSection: DeckInfoComponent;
     private resetButton: ResetButtonComponent;
+    private undoButton: UndoButtonComponent;
     private extendedMenuButton: CardMenuButtonComponent;
     private shortMenuButton: CardMenuButtonComponent;
 
@@ -31,6 +33,7 @@ export default class CardToolbarComponent {
         skipCurrentCard: () => void,
         suspendCurrentCard: () => Promise<void>,
         onOpenResetModalClick: () => void,
+        undoLastAction: () => Promise<void>,
         closeModal?: () => void,
     ) {
         // Build ui
@@ -51,6 +54,13 @@ export default class CardToolbarComponent {
         this.infoSection = new DeckInfoComponent(this.toolbar);
 
         this.toolbar.createDiv().addClass("sr-flex-spacer");
+
+        this.undoButton = new UndoButtonComponent(
+            this.toolbar,
+            undoLastAction,
+            EmulatedPlatform().isPhone || Platform.isPhone ? ["mod-raised"] : ["clickable-icon"],
+        );
+        this.undoButton.setAvailable(false);
 
         new EditButtonComponent(
             this.toolbar,
@@ -92,6 +102,7 @@ export default class CardToolbarComponent {
             skipCurrentCard,
             suspendCurrentCard,
             onOpenResetModalClick,
+            undoLastAction,
             closeModal,
             EmulatedPlatform().isPhone || Platform.isPhone
                 ? ["mod-raised", "sr-short-menu-button"]
@@ -111,6 +122,7 @@ export default class CardToolbarComponent {
             skipCurrentCard,
             suspendCurrentCard,
             onOpenResetModalClick,
+            undoLastAction,
             closeModal,
             EmulatedPlatform().isPhone || Platform.isPhone
                 ? ["mod-raised", "sr-extended-menu-button"]
@@ -165,6 +177,16 @@ export default class CardToolbarComponent {
      * Sets the reset button disabled state
      * @param disabled - The disabled state
      */
+    /**
+     * Sets whether there is an action to undo
+     * @param available - True if there is an action to undo
+     */
+    public setUndoAvailable(available: boolean) {
+        this.undoButton.setAvailable(available);
+        this.extendedMenuButton.setUndoAvailable(available);
+        this.shortMenuButton.setUndoAvailable(available);
+    }
+
     public setResetButtonDisabled(disabled: boolean) {
         this.resetButton.buttonEl.toggleClass("mod-disabled", disabled);
         this.extendedMenuButton.setResetButtonDisabled(disabled);

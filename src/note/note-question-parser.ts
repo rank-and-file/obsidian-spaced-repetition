@@ -14,6 +14,7 @@ import { frontmatterTagPseudoLineNum } from "src/data/data-structures/file/sr-fi
 import { SettingsUtil, SRSettings } from "src/data/settings";
 import { parse, ParsedQuestionInfo, ParserOptions } from "src/parser";
 import { RepItemScheduleInfo } from "src/scheduling/algorithms/base/rep-item-schedule-info";
+import { CardStorageMetadata } from "src/utils/comment-parser";
 import {
     splitNoteIntoFrontmatterAndContent,
     splitTextIntoLineArray,
@@ -140,15 +141,14 @@ export class NoteQuestionParser {
                 cardScheduleInfoList = cardScheduleInfoList.slice(0, correctLength);
             }
 
-            const cardSuspendedList: boolean[] = DataStore.getInstance().createSuspendedList(
-                question.questionText.original,
-            );
+            const cardMetadataList: CardStorageMetadata[] =
+                DataStore.getInstance().createCardMetadataList(question.questionText.original);
 
             // Create the list of card objects, and attach to the question
             const cardList: Card[] = this.createCardList(
                 cardFrontBackList,
                 cardScheduleInfoList,
-                cardSuspendedList,
+                cardMetadataList,
             );
             question.setCardList(cardList);
             result.push(question);
@@ -191,7 +191,7 @@ export class NoteQuestionParser {
     private createCardList(
         cardFrontBackList: CardFrontBack[],
         cardScheduleInfoList: RepItemScheduleInfo[],
-        cardSuspendedList: boolean[],
+        cardMetadataList: CardStorageMetadata[],
     ): Card[] {
         const siblings: Card[] = [];
 
@@ -209,7 +209,10 @@ export class NoteQuestionParser {
             });
 
             cardObj.scheduleInfo = hasScheduleInfo ? schedule : null;
-            cardObj.isSuspended = i < cardSuspendedList.length && cardSuspendedList[i];
+            if (i < cardMetadataList.length) {
+                cardObj.isSuspended = cardMetadataList[i].isSuspended;
+                cardObj.id = cardMetadataList[i].id;
+            }
 
             siblings.push(cardObj);
         }
